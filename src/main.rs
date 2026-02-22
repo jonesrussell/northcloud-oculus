@@ -304,8 +304,25 @@ fn main() -> Result<()> {
     // =========================================================================
     // 12. INTERACTION PROFILE BINDINGS
     // =========================================================================
-    // Bind our pose actions to the physical controller paths.
-    // We use the Oculus Touch profile for Rift CV1 Touch controllers.
+    // Suggest bindings for Quest 3 Touch Plus controllers (requires the extension).
+    if has_touch_plus {
+        xr_instance.suggest_interaction_profile_bindings(
+            xr_instance
+                .string_to_path("/interaction_profiles/meta/touch_controller_plus")?,
+            &[
+                xr::Binding::new(
+                    &left_hand_action,
+                    xr_instance.string_to_path("/user/hand/left/input/grip/pose")?,
+                ),
+                xr::Binding::new(
+                    &right_hand_action,
+                    xr_instance.string_to_path("/user/hand/right/input/grip/pose")?,
+                ),
+            ],
+        )?;
+    }
+
+    // Oculus Touch profile — Rift CV1 / Quest 2 Touch controllers.
     xr_instance.suggest_interaction_profile_bindings(
         xr_instance.string_to_path("/interaction_profiles/oculus/touch_controller")?,
         &[
