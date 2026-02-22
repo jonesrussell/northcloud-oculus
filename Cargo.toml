@@ -1,0 +1,16 @@
+[package]
+name = "northcloud-oculus"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+openxr = { version = "0.21", features = ["linked"] }
+ash = { version = "0.38", default-features = false, features = ["loaded"] }
+glam = "0.32"
+anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+ctrlc = "3"
+
+[build-dependencies]
+shaderc = "0.8"
