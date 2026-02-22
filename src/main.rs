@@ -866,9 +866,25 @@ fn main() -> Result<()> {
     // =========================================================================
     log::info!("Shutting down");
 
-    // Drop OpenXR handles BEFORE destroying Vulkan resources.
-    // OpenXR objects internally reference the Vulkan device and may use it
-    // during their own cleanup.
+    // Wait for all GPU work to finish before destroying any resources.
+    unsafe { vk_device.device_wait_idle()?; }
+
+    // Destroy Vulkan resources that reference swapchain images.
+    unsafe {
+        for fence in &fences {
+            vk_device.destroy_fence(*fence, None);
+        }
+        vk_device.destroy_command_pool(cmd_pool, None);
+
+        for buf in &swapchain.buffers {
+            vk_device.destroy_framebuffer(buf.framebuffer, None);
+            vk_device.destroy_image_view(buf.color, None);
+        }
+    }
+
+    // Drop OpenXR handles in reverse creation order.
+    // Swapchain must be dropped before session (it belongs to the session).
+    drop(swapchain);
     drop(left_hand_space);
     drop(right_hand_space);
     drop(left_hand_action);
@@ -879,26 +895,12 @@ fn main() -> Result<()> {
     drop(frame_stream);
     drop(session);
 
-    // Wait for all GPU work to finish before destroying Vulkan resources.
+    // Destroy remaining Vulkan objects and the device/instance.
     unsafe {
-        vk_device.device_wait_idle()?;
-
-        for fence in &fences {
-            vk_device.destroy_fence(*fence, None);
-        }
-        vk_device.destroy_command_pool(cmd_pool, None);
-
-        for buf in &swapchain.buffers {
-            vk_device.destroy_framebuffer(buf.framebuffer, None);
-            vk_device.destroy_image_view(buf.color, None);
-        }
-        drop(swapchain);
-
         vk_device.destroy_pipeline(pipeline, None);
         vk_device.destroy_pipeline_layout(pipeline_layout, None);
         vk_device.destroy_render_pass(render_pass, None);
 
-        // Application owns the Vulkan device and instance — must destroy them.
         vk_device.destroy_device(None);
         vk_instance.destroy_instance(None);
     }
