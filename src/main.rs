@@ -81,12 +81,9 @@ fn main() -> Result<()> {
     // =========================================================================
     // Load the OpenXR loader. On Windows with Oculus, this finds the Oculus
     // OpenXR runtime DLL via the registry.
-    #[cfg(feature = "linked")]
+    // The "linked" feature on the openxr dependency means the OpenXR loader
+    // is linked at compile time. Entry::linked() is available because of this.
     let xr_entry = xr::Entry::linked();
-    #[cfg(not(feature = "linked"))]
-    let xr_entry = unsafe {
-        xr::Entry::load().context("Failed to load OpenXR loader. Is an OpenXR runtime installed?")?
-    };
 
     // Check that the Vulkan extension is available.
     let available_extensions = xr_entry.enumerate_extensions()?;
@@ -622,12 +619,14 @@ fn main() -> Result<()> {
     // =========================================================================
     let mut event_storage = xr::EventDataBuffer::new();
     let mut session_running = false;
+    let mut exit_requested = false;
     let mut frame = 0usize;
 
     'main_loop: loop {
-        // --- Handle exit request ---
-        if !running.load(Ordering::Relaxed) {
+        // --- Handle exit request (only call request_exit once) ---
+        if !running.load(Ordering::Relaxed) && !exit_requested {
             log::info!("Exit requested");
+            exit_requested = true;
             match session.request_exit() {
                 Ok(()) => {}
                 Err(xr::sys::Result::ERROR_SESSION_NOT_RUNNING) => break,
@@ -867,7 +866,20 @@ fn main() -> Result<()> {
     // =========================================================================
     log::info!("Shutting down");
 
-    // Wait for all GPU work to finish before destroying resources.
+    // Drop OpenXR handles BEFORE destroying Vulkan resources.
+    // OpenXR objects internally reference the Vulkan device and may use it
+    // during their own cleanup.
+    drop(left_hand_space);
+    drop(right_hand_space);
+    drop(left_hand_action);
+    drop(right_hand_action);
+    drop(action_set);
+    drop(stage);
+    drop(frame_wait);
+    drop(frame_stream);
+    drop(session);
+
+    // Wait for all GPU work to finish before destroying Vulkan resources.
     unsafe {
         vk_device.device_wait_idle()?;
 
@@ -880,16 +892,15 @@ fn main() -> Result<()> {
             vk_device.destroy_framebuffer(buf.framebuffer, None);
             vk_device.destroy_image_view(buf.color, None);
         }
-        // swapchain.handle is dropped automatically by OpenXR
+        drop(swapchain);
 
         vk_device.destroy_pipeline(pipeline, None);
         vk_device.destroy_pipeline_layout(pipeline_layout, None);
         vk_device.destroy_render_pass(render_pass, None);
 
-        // Device and instance are dropped by OpenXR, but we should
-        // avoid dropping ash wrappers that would call vkDestroy*.
-        // ash::Device and ash::Instance don't call destroy on drop,
-        // so this is safe.
+        // Application owns the Vulkan device and instance — must destroy them.
+        vk_device.destroy_device(None);
+        vk_instance.destroy_instance(None);
     }
 
     log::info!("Clean shutdown complete");
