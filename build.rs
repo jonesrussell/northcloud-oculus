@@ -18,6 +18,8 @@ fn main() {
         ("shaders/solid.frag", shaderc::ShaderKind::Fragment),
     ];
 
+    println!("cargo:rerun-if-changed=build.rs");
+
     for (path, kind) in &shaders {
         println!("cargo:rerun-if-changed={}", path);
 
@@ -29,7 +31,9 @@ fn main() {
             .unwrap_or_else(|e| panic!("Failed to compile shader {}: {}", path, e));
 
         if artifact.get_num_warnings() > 0 {
-            eprintln!("Warnings in {}: {}", path, artifact.get_warning_messages());
+            for line in artifact.get_warning_messages().lines() {
+                println!("cargo:warning=Shader {}: {}", path, line);
+            }
         }
 
         let file_name = Path::new(path)
