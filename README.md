@@ -79,9 +79,28 @@ The Rift CV1's Constellation tracking (external USB IR sensors) is fully abstrac
 ## Architecture
 
 ```
-src/main.rs          — Complete prototype
-shaders/
-  fullscreen.vert    — Fullscreen triangle from vertex ID (multiview)
-  solid.frag         — Solid color per eye
-build.rs             — GLSL to SPIR-V compilation at build time
+northcloud-oculus/
+├── Cargo.toml           — Dependencies: openxr 0.21, ash 0.38, glam 0.32, anyhow, log
+├── Cargo.lock           — Pinned dependency versions
+├── build.rs             — GLSL → SPIR-V compilation at build time (shaderc)
+├── src/
+│   └── main.rs          — Complete prototype (~910 lines)
+├── shaders/
+│   ├── fullscreen.vert  — Fullscreen triangle from vertex ID (multiview)
+│   └── solid.frag       — Solid color per eye (blue left, red right)
+├── docs/
+│   └── plans/           — Design documents
+└── .gitignore
 ```
+
+## Dependencies
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| [openxr](https://crates.io/crates/openxr) | 0.21 | OpenXR bindings (linked loader) |
+| [ash](https://crates.io/crates/ash) | 0.38 | Raw Vulkan bindings (runtime loaded) |
+| [glam](https://crates.io/crates/glam) | 0.32 | Math (vectors, quaternions, matrices) |
+| [anyhow](https://crates.io/crates/anyhow) | 1 | Error handling |
+| [log](https://crates.io/crates/log) / [env_logger](https://crates.io/crates/env_logger) | 0.4 / 0.11 | Logging |
+| [ctrlc](https://crates.io/crates/ctrlc) | 3 | Graceful Ctrl+C shutdown |
+| [shaderc](https://crates.io/crates/shaderc) | 0.8 | GLSL → SPIR-V (build-time only) |

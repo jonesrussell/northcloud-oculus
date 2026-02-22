@@ -42,6 +42,7 @@ northcloud-oculus/
 | anyhow      | 1       | Error handling                         |
 | log         | 0.4     | Logging facade                         |
 | env_logger  | 0.11    | Logging backend                        |
+| ctrlc       | 3       | Graceful Ctrl+C shutdown               |
 | shaderc     | 0.8     | GLSL-to-SPIR-V (build dependency)     |
 
 ## OpenXR Initialization Sequence
@@ -52,7 +53,7 @@ northcloud-oculus/
 4. **Check Vulkan requirements** — Runtime specifies required Vulkan extensions/versions
 5. **Create Vulkan Instance & Device** — Via ash, honoring runtime requirements. Enable `VK_KHR_multiview`.
 6. **Create OpenXR Session** — Bind Vulkan resources via `GraphicsBindingVulkan`
-7. **Create Reference Spaces** — `STAGE` (room-scale origin) and `VIEW` (head-locked)
+7. **Create Reference Space** — `STAGE` (room-scale origin on the floor)
 8. **Create Action Sets** — Controller grip poses for left/right hand
 9. **Create Swapchain** — `R8G8B8A8_SRGB`, stereo array (2 layers), runtime-recommended resolution
 10. **Create Vulkan render pass + framebuffers** — One per swapchain image
@@ -71,11 +72,10 @@ loop {
         frame_begin()
         locate_views()         // left/right eye poses + FOVs
         sync_actions()         // controller state
-        for each eye:
-            acquire_image()
-            wait_image()
-            record_and_submit_vulkan_commands()
-            release_image()
+        acquire_image()        // single swapchain with array layers
+        wait_image()
+        record_and_submit_vulkan_commands()  // multiview renders both eyes
+        release_image()
         frame_end()            // submit layers to compositor
     if session.ended(): break
 ```
@@ -83,9 +83,8 @@ loop {
 ## Rendering
 
 - **Swapchain:** Single swapchain with 2 array layers (stereo)
-- **Shaders:** Fullscreen triangle from `gl_VertexIndex`, solid color with eye-distinguishing push constant
+- **Shaders:** Fullscreen triangle from `gl_VertexIndex`, solid color distinguished by `gl_ViewIndex` (multiview)
 - **Visual output:** Left eye = dark blue, right eye = dark red (confirms stereo)
-- **View-projection:** Asymmetric FOV → projection matrix, multiplied by inverse eye pose
 - **Sync:** Fence per in-flight frame (pipeline depth = 2)
 
 ## Controller Tracking
