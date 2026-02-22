@@ -1,6 +1,6 @@
 # northcloud-oculus
 
-Minimal OpenXR + Vulkan VR prototype targeting the Oculus Rift CV1.
+Minimal OpenXR + Vulkan VR prototype targeting the Oculus Rift CV1 and Meta Quest 3 (via Quest Link).
 
 Renders a solid color per eye (blue left, red right) to validate the full VR pipeline: OpenXR session, Vulkan rendering, head tracking, and controller pose polling.
 
@@ -8,7 +8,7 @@ Renders a solid color per eye (blue left, red right) to validate the full VR pip
 
 - **Windows 10/11** (the Oculus PC runtime only runs on Windows)
 - **Oculus PC app** installed (provides the OpenXR runtime)
-- **Rift CV1** connected (HDMI + 2-3 USB sensors)
+- **Rift CV1** connected (HDMI + 2-3 USB sensors), **or Meta Quest 3** connected via Quest Link (USB or Air Link)
 - **Vulkan-capable GPU** — NVIDIA GTX 970+ or AMD equivalent
 - **Rust stable toolchain** (1.77+) — install via [rustup](https://rustup.rs)
 - **CMake** — required by the `shaderc` build dependency for GLSL shader compilation
@@ -56,6 +56,7 @@ The prototype uses:
 - **gl_ViewIndex** in the shader to distinguish left/right eye
 
 The Rift CV1's Constellation tracking (external USB IR sensors) is fully abstracted by OpenXR. The Oculus runtime handles all sensor fusion internally.
+The Quest 3's inside-out tracking is similarly abstracted — no code changes needed between headsets.
 
 ## Troubleshooting
 
@@ -66,6 +67,7 @@ The Rift CV1's Constellation tracking (external USB IR sensors) is fully abstrac
 | Vulkan errors | Install/update GPU drivers and Vulkan SDK |
 | Black screen in headset | Verify Oculus is the active OpenXR runtime |
 | Low framerate | Use `--release` build, check GPU is not thermal throttling |
+| Quest 3 not detected via Link | Ensure Meta Quest Link app is running and set as active OpenXR runtime |
 
 ## Next Steps
 
