@@ -27,7 +27,9 @@
 //! NVIDIA GTX 970+ or AMD equivalent.
 
 use std::{
+    env,
     io::Cursor,
+    path::Path,
     sync::{
         atomic::{AtomicBool, Ordering},
         Arc,
@@ -54,6 +56,56 @@ const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_
 /// 2 = double-buffering: one frame rendering while the previous is displayed.
 const PIPELINE_DEPTH: u32 = 2;
 
+/// Tries to load the OpenXR loader from default path, then VULKAN_SDK\\Bin, then C:\\VulkanSDK, then OPENXR_LOADER_PATH.
+fn load_openxr_entry() -> Result<xr::Entry> {
+    // 1. Default: current dir or PATH
+    if let Ok(entry) = unsafe { xr::Entry::load() } {
+        return Ok(entry);
+    }
+    // 2. Vulkan SDK via env (e.g. C:\VulkanSDK\1.3.xxx)
+    if let Ok(sdk) = env::var("VULKAN_SDK") {
+        let path = Path::new(&sdk).join("Bin").join("openxr_loader.dll");
+        if path.exists() {
+            if let Ok(entry) = unsafe { xr::Entry::load_from(&path) } {
+                return Ok(entry);
+            }
+        }
+    }
+    // 3. Fallback: C:\VulkanSDK (find latest versioned subdir, e.g. 1.3.xxx)
+    #[cfg(target_os = "windows")]
+    {
+        let sdk_root = Path::new("C:\\VulkanSDK");
+        if sdk_root.is_dir() {
+            if let Ok(entries) = std::fs::read_dir(sdk_root) {
+                let mut versions: Vec<_> = entries
+                    .filter_map(|e| e.ok())
+                    .filter(|e| e.path().join("Bin").join("openxr_loader.dll").exists())
+                    .collect();
+                versions.sort_by(|a, b| b.path().cmp(&a.path()));
+                if let Some(first) = versions.first() {
+                    let path = first.path().join("Bin").join("openxr_loader.dll");
+                    if let Ok(entry) = unsafe { xr::Entry::load_from(&path) } {
+                        return Ok(entry);
+                    }
+                }
+            }
+        }
+    }
+    // 4. Explicit path
+    if let Ok(path_str) = env::var("OPENXR_LOADER_PATH") {
+        let path = Path::new(&path_str).join("openxr_loader.dll");
+        if path.exists() {
+            if let Ok(entry) = unsafe { xr::Entry::load_from(&path) } {
+                return Ok(entry);
+            }
+        }
+    }
+    // 5. Retry default for a clear error
+    unsafe { xr::Entry::load() }.context(
+        "OpenXR loader not found. Set VULKAN_SDK or ensure C:\\VulkanSDK\\<version>\\Bin\\openxr_loader.dll exists.",
+    )
+}
+
 // --- Helper structs ---
 
 /// Wraps the OpenXR swapchain and its per-image Vulkan framebuffers.
@@ -79,11 +131,9 @@ fn main() -> Result<()> {
     // =========================================================================
     // 2. OPENXR ENTRY + INSTANCE
     // =========================================================================
-    // Load the OpenXR loader. On Windows with Oculus, this finds the Oculus
-    // OpenXR runtime DLL via the registry.
-    // The "linked" feature on the openxr dependency means the OpenXR loader
-    // is linked at compile time. Entry::linked() is available because of this.
-    let xr_entry = xr::Entry::linked();
+    // Load the OpenXR loader (tries PATH, then VULKAN_SDK\Bin, then OPENXR_LOADER_PATH).
+    // The loader then finds the active runtime (e.g. Oculus) via the registry.
+    let xr_entry = load_openxr_entry()?;
 
     // Check that the Vulkan extension is available.
     let available_extensions = xr_entry.enumerate_extensions()?;

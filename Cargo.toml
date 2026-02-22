@@ -5,7 +5,7 @@ edition = "2021"
 rust-version = "1.77"
 
 [dependencies]
-openxr = { version = "0.21", features = ["linked"] }
+openxr = { version = "0.21", features = ["loaded"] }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 glam = "0.32"
 anyhow = "1"

@@ -12,6 +12,7 @@ Renders a solid color per eye (blue left, red right) to validate the full VR pip
 - **Vulkan-capable GPU** — NVIDIA GTX 970+ or AMD equivalent
 - **Rust stable toolchain** (1.77+) — install via [rustup](https://rustup.rs)
 - **CMake** — required by the `shaderc` build dependency for GLSL shader compilation
+- **OpenXR loader** — the app loads `openxr_loader.dll` at runtime. The Vulkan SDK does *not* include it. Run once: `.\scripts\fetch-openxr-loader.ps1` (downloads the Khronos loader and copies it to `target\release\`). Re-run after `cargo clean`.
 
 ## Setting the Active OpenXR Runtime
 
@@ -62,7 +63,7 @@ The Quest 3's inside-out tracking is similarly abstracted — no code changes ne
 
 | Problem | Solution |
 |---------|----------|
-| "Failed to load OpenXR loader" | Install the Oculus PC app |
+| "Failed to load OpenXR loader" | Run `.\scripts\fetch-openxr-loader.ps1` to download and place `openxr_loader.dll` next to the exe. Ensure the Oculus PC app is installed for the runtime. |
 | "No VR headset found" | Check USB sensors and HDMI, restart Oculus service |
 | Vulkan errors | Install/update GPU drivers and Vulkan SDK |
 | Black screen in headset | Verify Oculus is the active OpenXR runtime |
@@ -99,7 +100,7 @@ northcloud-oculus/
 
 | Crate | Version | Purpose |
 |-------|---------|---------|
-| [openxr](https://crates.io/crates/openxr) | 0.21 | OpenXR bindings (linked loader) |
+| [openxr](https://crates.io/crates/openxr) | 0.21 | OpenXR bindings (loader loaded at runtime) |
 | [ash](https://crates.io/crates/ash) | 0.38 | Raw Vulkan bindings (runtime loaded) |
 | [glam](https://crates.io/crates/glam) | 0.32 | Math (vectors, quaternions, matrices) |
 | [anyhow](https://crates.io/crates/anyhow) | 1 | Error handling |
