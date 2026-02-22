@@ -95,6 +95,12 @@ fn main() -> Result<()> {
     let mut enabled_extensions = xr::ExtensionSet::default();
     enabled_extensions.khr_vulkan_enable2 = true;
 
+    let has_touch_plus = available_extensions.meta_touch_controller_plus;
+    if has_touch_plus {
+        enabled_extensions.meta_touch_controller_plus = true;
+        log::info!("Quest 3 Touch Plus controller extension available");
+    }
+
     let xr_instance = xr_entry.create_instance(
         &xr::ApplicationInfo {
             application_name: "northcloud-oculus",
