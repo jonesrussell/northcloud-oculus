@@ -28,7 +28,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-openxr = { version = "0.21", features = ["linked"] }
+openxr = { version = "0.21", features = ["loaded"] }
 ash = { version = "0.38", default-features = false, features = ["loaded"] }
 glam = "0.32"
 anyhow = "1"
@@ -326,14 +326,8 @@ fn main() -> Result<()> {
     // =========================================================================
     // 2. OPENXR ENTRY + INSTANCE
     // =========================================================================
-    // Load the OpenXR loader. On Windows with Oculus, this finds the Oculus
-    // OpenXR runtime DLL via the registry.
-    #[cfg(feature = "linked")]
-    let xr_entry = xr::Entry::linked();
-    #[cfg(not(feature = "linked"))]
-    let xr_entry = unsafe {
-        xr::Entry::load().context("Failed to load OpenXR loader. Is an OpenXR runtime installed?")?
-    };
+    // Load the OpenXR loader (tries PATH, VULKAN_SDK\\Bin, C:\\VulkanSDK, OPENXR_LOADER_PATH).
+    let xr_entry = load_openxr_entry()?;
 
     // Check that the Vulkan extension is available.
     let available_extensions = xr_entry.enumerate_extensions()?;

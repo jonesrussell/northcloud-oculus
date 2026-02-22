@@ -11,11 +11,13 @@ Minimal OpenXR + Vulkan VR prototype targeting the Oculus Rift CV1 and Meta Ques
 ```bash
 cargo build                          # debug build
 cargo build --release                # release build
-cargo run --release                  # build + run (requires Oculus runtime)
+cargo run --release                  # build + run (requires Oculus runtime + openxr_loader.dll)
 RUST_LOG=debug cargo run --release   # run with per-frame head/controller logging
 ```
 
-Shaders (GLSL 450) in `shaders/` are compiled to SPIR-V at build time by `build.rs` using shaderc, then embedded via `include_bytes!`. No tests or CI exist yet.
+**First-time / after `cargo clean`:** Run `.\scripts\fetch-openxr-loader.ps1` so `openxr_loader.dll` is in `target\release\` (Vulkan SDK does not include it).
+
+Shaders (GLSL 450) in `shaders/` are compiled to SPIR-V at build time by `build.rs` using shaderc, then embedded via `include_bytes!`. Building shaderc from source (when no system lib is found) requires **Ninja** and **Python 3**. No tests or CI exist yet.
 
 ## Architecture
 
@@ -33,7 +35,7 @@ Key types: `Swapchain` (XR swapchain + Vec<Framebuffer>), `Framebuffer` (VkFrame
 
 - **ash over wgpu** — direct Vulkan bindings preserve OpenXR swapchain integration
 - **Single-file monolith** — intentional; module decomposition (xr.rs, renderer.rs, input.rs) is a planned next step
-- **Linked OpenXR loader** — compile-time linking for Windows deployment
+- **Runtime-loaded OpenXR loader** — `openxr` uses the `loaded` feature; the app finds `openxr_loader.dll` via PATH, `VULKAN_SDK\Bin`, `C:\VulkanSDK\<version>\Bin`, or `OPENXR_LOADER_PATH`. Use `scripts/fetch-openxr-loader.ps1` if the Vulkan SDK is not used (it does not ship the loader).
 - **Multiview rendering** — efficient stereo in a single render pass
 
 ## Conventions

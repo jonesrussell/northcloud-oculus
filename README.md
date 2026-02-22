@@ -91,6 +91,8 @@ northcloud-oculus/
 ├── shaders/
 │   ├── fullscreen.vert  — Fullscreen triangle from vertex ID (multiview)
 │   └── solid.frag       — Solid color per eye (blue left, red right)
+├── scripts/
+│   └── fetch-openxr-loader.ps1 — Downloads openxr_loader.dll into target\release\
 ├── docs/
 │   └── plans/           — Design documents
 └── .gitignore

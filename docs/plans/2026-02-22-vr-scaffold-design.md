@@ -47,7 +47,7 @@ northcloud-oculus/
 
 ## OpenXR Initialization Sequence
 
-1. **Load runtime** — `openxr::Entry::linked()` loads the Oculus OpenXR runtime DLL
+1. **Load OpenXR loader** — The app loads `openxr_loader.dll` at runtime (e.g. via `Entry::load()` or `scripts/fetch-openxr-loader.ps1`). The loader then discovers the active runtime (e.g. Oculus) via the registry.
 2. **Create Instance** — Request `XR_KHR_vulkan_enable2` extension
 3. **Get System** — `FormFactor::HEAD_MOUNTED_DISPLAY` selects the Rift CV1
 4. **Check Vulkan requirements** — Runtime specifies required Vulkan extensions/versions
