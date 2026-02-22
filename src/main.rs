@@ -690,29 +690,31 @@ fn main() -> Result<()> {
                     log::warn!("Lost {} OpenXR events", e.lost_event_count());
                 }
                 InteractionProfileChanged(_) => {
-                    let left_path =
-                        xr_instance.string_to_path("/user/hand/left")?;
-                    let right_path =
-                        xr_instance.string_to_path("/user/hand/right")?;
-                    let left_profile = session
-                        .current_interaction_profile(left_path)
-                        .context("Failed to query left hand interaction profile")?;
-                    let right_profile = session
-                        .current_interaction_profile(right_path)
-                        .context("Failed to query right hand interaction profile")?;
-                    if left_profile != xr::Path::NULL {
-                        log::info!(
-                            "Left hand profile: {}",
-                            xr_instance.path_to_string(left_profile)
-                                .context("Failed to convert left profile path to string")?
-                        );
-                    }
-                    if right_profile != xr::Path::NULL {
-                        log::info!(
-                            "Right hand profile: {}",
-                            xr_instance.path_to_string(right_profile)
-                                .context("Failed to convert right profile path to string")?
-                        );
+                    if session_running {
+                        let left_path =
+                            xr_instance.string_to_path("/user/hand/left")?;
+                        let right_path =
+                            xr_instance.string_to_path("/user/hand/right")?;
+                        let left_profile = session
+                            .current_interaction_profile(left_path)
+                            .context("Failed to query left hand interaction profile")?;
+                        let right_profile = session
+                            .current_interaction_profile(right_path)
+                            .context("Failed to query right hand interaction profile")?;
+                        if left_profile != xr::Path::NULL {
+                            log::info!(
+                                "Left hand profile: {}",
+                                xr_instance.path_to_string(left_profile)
+                                    .context("Failed to convert left profile path to string")?
+                            );
+                        }
+                        if right_profile != xr::Path::NULL {
+                            log::info!(
+                                "Right hand profile: {}",
+                                xr_instance.path_to_string(right_profile)
+                                    .context("Failed to convert right profile path to string")?
+                            );
+                        }
                     }
                 }
                 _ => {}
