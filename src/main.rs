@@ -66,9 +66,7 @@ fn sample_diagram() -> (Vec<Node>, Vec<Edge>) {
 fn main() -> AppExit {
     App::new()
         .add_plugins(add_xr_plugins(
-            DefaultPlugins
-                .build()
-                .disable::<PipelinedRenderingPlugin>(),
+            DefaultPlugins.build().disable::<PipelinedRenderingPlugin>(),
         ))
         .insert_resource(OxrSessionConfig {
             blend_mode_preference: vec![
