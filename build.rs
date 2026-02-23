@@ -15,6 +15,8 @@ fn main() {
     let shaders = [
         ("shaders/fullscreen.vert", shaderc::ShaderKind::Vertex),
         ("shaders/solid.frag", shaderc::ShaderKind::Fragment),
+        ("shaders/diagram.vert", shaderc::ShaderKind::Vertex),
+        ("shaders/diagram.frag", shaderc::ShaderKind::Fragment),
     ];
 
     println!("cargo:rerun-if-changed=build.rs");
