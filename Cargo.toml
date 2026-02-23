@@ -1,6 +1,6 @@
 [package]
 name = "northcloud-oculus"
-version = "0.1.0"
+version = "0.3.0"
 edition = "2021"
 rust-version = "1.77"
 
@@ -9,3 +9,6 @@ bevy = "0.18"
 bevy_mod_xr = "0.5"
 bevy_mod_openxr = { version = "0.5", features = ["vulkan"] }
 openxr = "0.21"
+redis = "0.27"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

@@ -3,12 +3,19 @@
 //! Renders a static (read-only) UML diagram (class boxes + edges as thin cuboids) in VR
 //! via Bevy + bevy_mod_openxr. Optional debug cube at (0, 0, -2): set NORTHCLOUD_DEBUG_CUBE=0 or false to disable.
 //!
+//! Optional live feed from north-cloud Redis: set REDIS_ADDR, REDIS_CHANNELS (e.g. articles:crime,articles:mining).
+//!
 //! Run with: `cargo run --release` (requires Oculus runtime + openxr_loader.dll).
+
+mod redis_feed;
 
 use bevy::prelude::*;
 use bevy::render::pipelined_rendering::PipelinedRenderingPlugin;
+use bevy::sprite::Text2d;
 use bevy_mod_openxr::{add_xr_plugins, resources::OxrSessionConfig};
 use openxr::EnvironmentBlendMode;
+
+use redis_feed::{LiveFeedBuffer, RedisFeedConfig, spawn_subscriber};
 
 // --- Marker components (cleanup, future interaction) ---
 
@@ -20,6 +27,10 @@ struct DiagramEdge;
 
 #[derive(Component)]
 struct DebugCube;
+
+/// Marker for the live-feed panel entity (single Text2d, world-space).
+#[derive(Component)]
+struct LiveFeedPanel;
 
 // --- Diagram model (same as prior Vulkan version) ---
 
@@ -64,6 +75,8 @@ fn sample_diagram() -> (Vec<Node>, Vec<Edge>) {
 }
 
 fn main() -> AppExit {
+    let live_feed_buffer = init_live_feed_buffer();
+
     App::new()
         .add_plugins(add_xr_plugins(
             DefaultPlugins.build().disable::<PipelinedRenderingPlugin>(),
@@ -77,8 +90,23 @@ fn main() -> AppExit {
             ..default()
         })
         .insert_resource(ClearColor(Color::BLACK))
-        .add_systems(Startup, setup_diagram)
+        .insert_resource(live_feed_buffer)
+        .add_systems(Startup, (setup_diagram, setup_feed_panel).chain())
+        .add_systems(Update, (drain_redis_feed, update_feed_panel).chain())
         .run()
+}
+
+/// Build LiveFeedBuffer from env: spawn subscriber if config valid, else disabled buffer.
+fn init_live_feed_buffer() -> LiveFeedBuffer {
+    if let Some(config) = RedisFeedConfig::from_env() {
+        if let Some(receiver) = spawn_subscriber(config.clone()) {
+            LiveFeedBuffer::new(receiver, config.max_items)
+        } else {
+            LiveFeedBuffer::disabled(config.max_items)
+        }
+    } else {
+        LiveFeedBuffer::disabled(20)
+    }
 }
 
 fn setup_diagram(
@@ -139,5 +167,60 @@ fn setup_diagram(
             ..default()
         },
         Transform::from_xyz(4.0, 8.0, 4.0),
+    ));
+}
+
+// --- Live feed (Redis → VR panel) ---
+
+fn drain_redis_feed(mut buffer: ResMut<LiveFeedBuffer>) {
+    buffer.drain_receiver();
+}
+
+/// Rebuild the feed panel text from the buffer each frame. Runs after drain_redis_feed.
+fn update_feed_panel(
+    buffer: Res<LiveFeedBuffer>,
+    mut panel_query: Query<&mut Text2d, With<LiveFeedPanel>>,
+) {
+    let Some(mut text) = panel_query.iter_mut().next() else {
+        return;
+    };
+    const MAX_LINES: usize = 10;
+    const TITLE_LEN: usize = 50;
+    let lines: Vec<String> = buffer
+        .items
+        .iter()
+        .rev()
+        .take(MAX_LINES)
+        .map(|a| {
+            let title = a.title.chars().take(TITLE_LEN).collect::<String>();
+            let suffix = if a.title.len() > TITLE_LEN { "…" } else { "" };
+            let q = a
+                .quality_score
+                .map(|s| format!(" q{}", s))
+                .unwrap_or_default();
+            format!("[{}] {}{} | {}", a.channel, title, suffix, q)
+        })
+        .collect();
+    let content = if lines.is_empty() {
+        "Live feed (set REDIS_CHANNELS to subscribe)".to_string()
+    } else {
+        lines.join("\n")
+    };
+    *text = Text2d::new(content);
+}
+
+fn setup_feed_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let font = asset_server.load("fonts/FiraSans-Bold.ttf");
+    commands.spawn((
+        Text2d::new("Live feed (set REDIS_CHANNELS to subscribe)"),
+        TextFont {
+            font: font.into(),
+            font_size: 24.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.9, 0.9, 0.9)),
+        Transform::from_xyz(-0.8, 0.0, -2.0)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+        LiveFeedPanel,
     ));
 }
