@@ -1,2 +1,3 @@
 /target
 *.spv
+.claude/settings.local.json
