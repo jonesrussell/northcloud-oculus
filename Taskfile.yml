@@ -13,7 +13,7 @@ tasks:
       - cargo build --release
 
   run:
-    desc: Run VR app (release); needs Oculus runtime + openxr_loader.dll
+    desc: Run VR app (release); needs Oculus runtime + openxr_loader.dll. Tries Redis at 127.0.0.1:6379 (channel "test" if REDIS_CHANNELS unset); status bar shows green when connected.
     cmds:
       - cargo run --release
 

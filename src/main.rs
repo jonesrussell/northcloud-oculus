@@ -34,6 +34,19 @@ struct LiveFeedPanel;
 #[derive(Component)]
 struct RedisStatusPanel;
 
+/// 3D quad at Redis panel position; color shows connection status (visible in XR; Text2d is not)
+#[derive(Component)]
+struct RedisStatusQuad;
+
+/// Material handles for Redis status colors so the 3D quad updates in VR
+#[derive(Resource, Clone)]
+struct RedisStatusMaterials {
+    disabled: Handle<StandardMaterial>,
+    connecting: Handle<StandardMaterial>,
+    connected: Handle<StandardMaterial>,
+    disconnected: Handle<StandardMaterial>,
+}
+
 // --- Diagram model (same as prior Vulkan version) ---
 
 #[derive(Clone, Debug)]
@@ -100,12 +113,16 @@ fn main() -> AppExit {
 
 fn init_live_feed_buffer() -> LiveFeedBuffer {
     if let Some(config) = RedisFeedConfig::from_env() {
+        eprintln!("[redis] REDIS_CHANNELS set, spawning subscriber to {} …", config.addr);
         if let Some(receiver) = spawn_subscriber(config.clone()) {
+            eprintln!("[redis] Subscriber thread started, status will show Connecting then Connected/Disconnected");
             LiveFeedBuffer::new(receiver, config.max_items)
         } else {
+            eprintln!("[redis] Subscriber thread failed to spawn, feed disabled");
             LiveFeedBuffer::disabled(config.max_items)
         }
     } else {
+        eprintln!("[redis] REDIS_CHANNELS not set, feed disabled");
         LiveFeedBuffer::disabled(20)
     }
 }
@@ -208,6 +225,7 @@ fn update_feed_panel(
 }
 
 fn setup_feed_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
+    eprintln!("[debug] setup_feed_panel running");
     let font = asset_server.load("fonts/FiraSans-Bold.ttf");
     commands.spawn((
         Text2d::new("Live feed (set REDIS_CHANNELS to subscribe)"),
@@ -221,37 +239,88 @@ fn setup_feed_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
             .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
         LiveFeedPanel,
     ));
+    eprintln!("[debug] LiveFeedPanel entity spawned at (-0.8, 0.0, -2.0)");
 }
 
-fn setup_redis_status_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup_redis_status_panel(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+) {
+    eprintln!("[debug] setup_redis_status_panel running");
+    let pos = Vec3::new(0.0, 0.55, -1.95);
     let font = asset_server.load("fonts/FiraSans-Bold.ttf");
     commands.spawn((
-        Text2d::new("Redis: —"),
+        Text2d::new("Redis: disconnected"),
         TextFont {
             font: font.into(),
-            font_size: 20.0,
+            font_size: 22.0,
             ..default()
         },
-        TextColor(Color::srgb(0.7, 0.7, 0.7)),
-        Transform::from_xyz(-0.8, -0.5, -2.0)
-            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+        TextColor(Color::srgb(0.9, 0.3, 0.2)),
+        Transform::from_xyz(pos.x, pos.y, pos.z)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::PI)),
         RedisStatusPanel,
     ));
+    eprintln!("[debug] RedisStatusPanel entity spawned at {:?}", pos);
+
+    // 3D status quad (visible in XR; Text2d only renders to desktop window)
+    let status_materials = RedisStatusMaterials {
+        disabled: materials.add(Color::srgb(0.9, 0.3, 0.2)),
+        connecting: materials.add(Color::srgb(0.9, 0.8, 0.2)),
+        connected: materials.add(Color::srgb(0.2, 0.85, 0.4)),
+        disconnected: materials.add(Color::srgb(0.9, 0.3, 0.2)),
+    };
+    commands.insert_resource(status_materials.clone());
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.2, 0.1, 0.02))),
+        MeshMaterial3d(status_materials.disconnected.clone()),
+        Transform::from_translation(pos),
+        RedisStatusQuad,
+    ));
+    eprintln!("[debug] RedisStatusQuad spawned at {:?} (color = connection status in VR)", pos);
 }
 
 fn update_redis_status_panel(
     buffer: Res<LiveFeedBuffer>,
-    mut query: Query<(&mut Text2d, &mut TextColor), With<RedisStatusPanel>>,
+    materials: Res<RedisStatusMaterials>,
+    mut text_query: Query<(&mut Text2d, &mut TextColor), With<RedisStatusPanel>>,
+    mut quad_query: Query<&mut MeshMaterial3d<StandardMaterial>, With<RedisStatusQuad>>,
+    mut did_log: Local<bool>,
 ) {
-    let Some((mut text, mut color)) = query.iter_mut().next() else {
-        return;
+    let (label, c, material_handle) = match buffer.connection_status {
+        RedisConnectionStatus::Disabled => (
+            "Redis: disconnected",
+            Color::srgb(0.9, 0.3, 0.2),
+            materials.disabled.clone(),
+        ),
+        RedisConnectionStatus::Connecting => (
+            "Redis: connecting…",
+            Color::srgb(0.9, 0.8, 0.2),
+            materials.connecting.clone(),
+        ),
+        RedisConnectionStatus::Connected => (
+            "Redis: connected",
+            Color::srgb(0.2, 0.85, 0.4),
+            materials.connected.clone(),
+        ),
+        RedisConnectionStatus::Disconnected => (
+            "Redis: disconnected",
+            Color::srgb(0.9, 0.3, 0.2),
+            materials.disconnected.clone(),
+        ),
     };
-    let (label, c) = match buffer.connection_status {
-        RedisConnectionStatus::Disabled => ("Redis: disabled", Color::srgb(0.5, 0.5, 0.5)),
-        RedisConnectionStatus::Connecting => ("Redis: connecting…", Color::srgb(0.9, 0.8, 0.2)),
-        RedisConnectionStatus::Connected => ("Redis: connected", Color::srgb(0.2, 0.85, 0.4)),
-        RedisConnectionStatus::Disconnected => ("Redis: disconnected", Color::srgb(0.9, 0.3, 0.2)),
-    };
-    *text = Text2d::new(label.to_string());
-    *color = TextColor(c);
+
+    if let Some((mut text, mut color)) = text_query.iter_mut().next() {
+        if !*did_log {
+            eprintln!("[debug] update_redis_status_panel: RedisStatusPanel entity found, updating text");
+            *did_log = true;
+        }
+        *text = Text2d::new(label.to_string());
+        *color = TextColor(c);
+    }
+    for mut mesh_mat in quad_query.iter_mut() {
+        *mesh_mat = MeshMaterial3d::<StandardMaterial>(material_handle.clone());
+    }
 }

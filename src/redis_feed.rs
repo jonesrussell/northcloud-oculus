@@ -73,20 +73,29 @@ pub struct RedisFeedConfig {
     pub max_items: usize,
 }
 
+/// Default channel when REDIS_CHANNELS is not set — status bar still reflects connection state.
+const DEFAULT_CHANNEL: &str = "test";
+
 impl RedisFeedConfig {
     pub fn from_env() -> Option<Self> {
         let addr = std::env::var("REDIS_ADDR").unwrap_or_else(|_| "127.0.0.1:6379".to_string());
         let password = std::env::var("REDIS_PASSWORD").ok();
-        let channels_var = std::env::var("REDIS_CHANNELS").ok()?;
-        let channels: Vec<String> = channels_var
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
-        if channels.is_empty() {
-            eprintln!("REDIS_CHANNELS empty or invalid, live feed disabled");
-            return None;
-        }
+        let channels: Vec<String> = match std::env::var("REDIS_CHANNELS") {
+            Ok(v) => {
+                let list: Vec<String> = v
+                    .split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect();
+                if list.is_empty() {
+                    eprintln!("REDIS_CHANNELS empty or invalid, using default channel {:?}", DEFAULT_CHANNEL);
+                    vec![DEFAULT_CHANNEL.to_string()]
+                } else {
+                    list
+                }
+            }
+            Err(_) => vec![DEFAULT_CHANNEL.to_string()],
+        };
         let max_items = std::env::var("REDIS_MAX_ITEMS")
             .ok()
             .and_then(|s| s.parse().ok())
@@ -160,8 +169,14 @@ impl LiveFeedBuffer {
             drop(guard);
             for msg in messages {
                 match msg {
-                    FeedMessage::Connected => self.connection_status = RedisConnectionStatus::Connected,
-                    FeedMessage::Disconnected => self.connection_status = RedisConnectionStatus::Disconnected,
+                    FeedMessage::Connected => {
+                        eprintln!("[redis_feed] Received Connected, status -> green");
+                        self.connection_status = RedisConnectionStatus::Connected;
+                    }
+                    FeedMessage::Disconnected => {
+                        eprintln!("[redis_feed] Received Disconnected, status -> red");
+                        self.connection_status = RedisConnectionStatus::Disconnected;
+                    }
                     FeedMessage::Article(a) => self.push(a),
                 }
             }
@@ -201,6 +216,9 @@ pub fn spawn_subscriber(config: RedisFeedConfig) -> Option<mpsc::Receiver<FeedMe
     Some(rx)
 }
 
+const CONNECT_RETRY_ATTEMPTS: u32 = 10;
+const CONNECT_RETRY_DELAY_MS: u64 = 500;
+
 fn run_subscriber_loop(
     addr: String,
     password: Option<String>,
@@ -214,18 +232,31 @@ fn run_subscriber_loop(
     let client = match redis::Client::open(url.as_str()) {
         Ok(c) => c,
         Err(e) => {
-            eprintln!("[redis_feed] Redis connection failed, live feed disabled: {}", e);
+            eprintln!("[redis_feed] Redis client open failed: {}", e);
             let _ = tx.send(FeedMessage::Disconnected);
             return;
         }
     };
 
-    let mut conn = match client.get_connection() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("[redis_feed] Redis connection failed, live feed disabled: {}", e);
-            let _ = tx.send(FeedMessage::Disconnected);
-            return;
+    let mut conn = 'connect: loop {
+        match client.get_connection() {
+            Ok(c) => break c,
+            Err(e) => {
+                for attempt in 1..=CONNECT_RETRY_ATTEMPTS {
+                    eprintln!(
+                        "[redis_feed] Redis connection attempt {} failed: {} (retrying in {}ms)",
+                        attempt, e, CONNECT_RETRY_DELAY_MS
+                    );
+                    std::thread::sleep(std::time::Duration::from_millis(CONNECT_RETRY_DELAY_MS));
+                    if let Ok(c) = client.get_connection() {
+                        eprintln!("[redis_feed] Redis connected on retry {}", attempt);
+                        break 'connect c;
+                    }
+                }
+                eprintln!("[redis_feed] Redis connection failed after {} retries", CONNECT_RETRY_ATTEMPTS);
+                let _ = tx.send(FeedMessage::Disconnected);
+                return;
+            }
         }
     };
 

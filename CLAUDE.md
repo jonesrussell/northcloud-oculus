@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-UML diagram VR viewer targeting the Oculus Rift CV1 and Meta Quest 3 (via Quest Link). Built with **Bevy 0.18** and **bevy_mod_openxr** (OpenXR backend). Rust (stable 1.77+). Runs on Windows with an Oculus runtime.
+UML diagram VR viewer targeting the Oculus Rift CV1 and Meta Quest 3 (via Quest Link). Built with **Bevy 0.18** and **bevy_mod_openxr** (OpenXR backend). Rust (stable 1.77+). Runs on Windows with an Oculus runtime. Optional **Redis live feed**: set `REDIS_CHANNELS` (and optionally `REDIS_ADDR`, `REDIS_PASSWORD`) to subscribe to Pub/Sub; a **Redis status panel** (3D quad above the diagram) shows connection state in VR (red / yellow / green).
 
 ## Build & Run
 
@@ -18,8 +18,10 @@ cargo run --release                 # build + run (requires Oculus runtime + ope
 
 ## Architecture
 
-- **Bevy + OpenXR:** The app uses `bevy_mod_xr` and `bevy_mod_openxr`; `add_xr_plugins(DefaultPlugins.build().disable::<PipelinedRenderingPlugin>())` wires the XR session and rendering. The plugin owns the XR camera/views; we only spawn world-space entities (diagram nodes, edges, optional debug cube, light).
+- **Bevy + OpenXR:** The app uses `bevy_mod_xr` and `bevy_mod_openxr`; `add_xr_plugins(DefaultPlugins.build().disable::<PipelinedRenderingPlugin>())` wires the XR session and rendering. The plugin owns the XR camera/views; we spawn world-space entities (diagram nodes, edges, Redis status quad, optional debug cube, light).
 - **Diagram:** One `setup_diagram` Startup system builds the scene: `sample_diagram()` returns nodes and edges; we spawn nodes as quads (`Rectangle`), edges as thin `Cuboid`s, and an optional debug cube. Marker components `DiagramNode`, `DiagramEdge`, `DebugCube` identify diagram entities for future interaction/cleanup.
+- **Redis status panel:** A 3D quad (`RedisStatusQuad`) above the diagram shows connection state by material color. **Text2d is not rendered in the XR view** (only on the desktop window), so status in VR is conveyed via the colored quad; `RedisStatusMaterials` resource holds the four material handles; `update_redis_status_panel` updates both the Text2d and the quad’s `MeshMaterial3d<StandardMaterial>`.
+- **Live feed:** `src/redis_feed.rs` — `RedisFeedConfig::from_env()`, `spawn_subscriber()`, `LiveFeedBuffer` (resource), `RedisConnectionStatus`. Articles are shown as `Text2d` on the desktop window via `LiveFeedPanel`; the buffer is drained in `drain_redis_feed`.
 - **No custom Vulkan/shaders:** Rendering is via Bevy/wgpu; no build-time shader compilation.
 
 ## Key Design Decisions

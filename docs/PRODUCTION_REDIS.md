@@ -1,6 +1,6 @@
 # Connecting to production Redis (north-cloud)
 
-The VR app can subscribe to the same Redis Pub/Sub channels used by north-cloud in production. Production runs at `jones@northcloud.biz:/opt/north-cloud`; Redis runs on the host and is not exposed to the internet. Use SSH local port forwarding so the app connects to `127.0.0.1:6379` on your machine, which is forwarded to Redis on the server.
+The VR app can subscribe to the same Redis Pub/Sub channels used by north-cloud in production. In the headset, a **Redis status bar** (quad above the UML diagram) shows red when disconnected, yellow when connecting, and green when connected. Production runs at `jones@northcloud.biz:/opt/north-cloud`; Redis runs on the host and is not exposed to the internet. Use SSH local port forwarding so the app connects to `127.0.0.1:6379` on your machine, which is forwarded to Redis on the server.
 
 ## 1. Start the SSH tunnel
 
