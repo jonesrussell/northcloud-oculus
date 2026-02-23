@@ -243,12 +243,13 @@ fn drain_redis_feed(mut buffer: ResMut<LiveFeedBuffer>) {
     buffer.drain_receiver();
 }
 
-const ANIMATED_CARD_PATH_START: Vec3 = Vec3::new(0.3, 0.2, -1.9);
-const ANIMATED_CARD_PATH_END: Vec3 = Vec3::new(-0.5, 0.0, -1.95);
+// Left-to-right: start left of feed, end right
+const ANIMATED_CARD_PATH_START: Vec3 = Vec3::new(-0.5, 0.0, -1.95);
+const ANIMATED_CARD_PATH_END: Vec3 = Vec3::new(0.3, 0.2, -1.9);
 const ANIMATED_CARD_DURATION: f32 = 1.5;
-const ANIMATED_CARD_TEXT_W: u32 = 256;
-const ANIMATED_CARD_TEXT_H: u32 = 48;
-const ANIMATED_CARD_TITLE_LEN: usize = 30;
+const ANIMATED_CARD_TEXT_W: u32 = 512;
+const ANIMATED_CARD_TEXT_H: u32 = 96;
+const ANIMATED_CARD_TITLE_LEN: usize = 40;
 
 fn spawn_animated_messages(
     mut commands: Commands,
@@ -281,7 +282,7 @@ fn spawn_animated_messages(
             &label,
             ANIMATED_CARD_TEXT_W,
             ANIMATED_CARD_TEXT_H,
-            18.0,
+            28.0,
             220,
             220,
             220,
@@ -305,10 +306,9 @@ fn spawn_animated_messages(
             ..default()
         });
         commands.spawn((
-            Mesh3d(meshes.add(Cuboid::new(0.2, 0.04, 0.002))),
+            Mesh3d(meshes.add(Cuboid::new(0.4, 0.08, 0.002))),
             MeshMaterial3d(mat),
-            Transform::from_translation(ANIMATED_CARD_PATH_START)
-                .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+            Transform::from_translation(ANIMATED_CARD_PATH_START),
             AnimatedMessageCard {
                 progress: 0.0,
                 duration: ANIMATED_CARD_DURATION,
