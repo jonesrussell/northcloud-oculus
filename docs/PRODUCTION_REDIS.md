@@ -33,7 +33,9 @@ $env:REDIS_CHANNELS = "streetcode:crime_feed"   # or comma-separated list from p
 cargo run --release
 ```
 
-Channel names come from the publisher’s `channels.redis_channel` (e.g. `streetcode:crime_feed`). Use a comma-separated list to subscribe to multiple channels.
+Or use `task run:prod` if you have a `.env` with `REDIS_ADDR`, `REDIS_PASSWORD`, and `REDIS_CHANNELS`.
+
+Channel names come from the publisher’s `channels.redis_channel` (e.g. `streetcode:crime_feed`). Use a comma-separated list to subscribe to multiple channels. If you omit `REDIS_CHANNELS`, the app still connects using the default channel `test` and the status bar will show green when the tunnel is up.
 
 ## 4. Optional: redis-cli
 

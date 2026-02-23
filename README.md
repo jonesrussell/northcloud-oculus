@@ -2,7 +2,7 @@
 
 UML diagram VR viewer targeting the Oculus Rift CV1 and Meta Quest 3 (via Quest Link). Built with **Bevy 0.18** and **bevy_mod_openxr**.
 
-Renders a static diagram (class boxes + edges) in VR. Optional **Redis live feed**: set `REDIS_ADDR` and `REDIS_CHANNELS` to subscribe to north-cloud Redis Pub/Sub; a **Redis status panel** (3D quad above the diagram) shows connection state in the headset (red = disconnected, yellow = connecting, green = connected). Optional debug cube at (0, 0, -2); set `NORTHCLOUD_DEBUG_CUBE=0` or `false` to disable.
+Renders a static diagram (class boxes + edges) in VR. **Redis status panel** (3D quad above the diagram) shows connection state in the headset: red = disconnected, yellow = connecting, green = connected. The app always tries to connect to Redis at `127.0.0.1:6379` (or `REDIS_ADDR`); if `REDIS_CHANNELS` is unset it subscribes to channel `test` so the bar reflects real connection state. Optional **live feed** of articles when `REDIS_CHANNELS` is set to your channels. Optional debug cube at (0, 0, -2); set `NORTHCLOUD_DEBUG_CUBE=0` or `false` to disable.
 
 ## Prerequisites
 
@@ -35,7 +35,7 @@ cargo build --release
 cargo run --release
 ```
 
-Use `--release` for VR performance (debug builds are too slow in-headset).
+Or use [Task](https://taskfile.dev): `task` (default) or `task run` to run; `task run:prod` to run with `REDIS_*` from `.env`. Use `--release` for VR performance (debug builds are too slow in-headset).
 
 ## What You Should See
 
@@ -43,21 +43,23 @@ Use `--release` for VR performance (debug builds are too slow in-headset).
 - **On desktop window:** If Redis is configured, live feed text and "Redis: …" status text appear on the window (2D text does not render in the XR view).
 - **Exit:** Close the window, Ctrl+C in terminal, or remove headset.
 
-## Optional: Redis live feed
+## Redis connection and live feed
 
-To subscribe to north-cloud Redis Pub/Sub (e.g. article feeds):
+The app **always** attempts a Redis connection so the status bar reflects real state (green when Redis is reachable). If Redis is not running, the bar stays red; start Redis locally (e.g. `redis-server` or Choco `redis`) to see green.
 
-- **Required:** `REDIS_CHANNELS` — comma-separated channel names (e.g. `articles:crime,articles:mining`). If unset, the live feed is disabled and the status bar shows disconnected.
-- **Optional:** `REDIS_ADDR` (default `127.0.0.1:6379`), `REDIS_PASSWORD`, `REDIS_MAX_ITEMS` (default 20).
+- **REDIS_CHANNELS** — Comma-separated channel names for the live article feed (e.g. `articles:crime,articles:mining`). If **unset**, the app subscribes to channel `test` so the bar still shows connection state; no article feed until you set real channels.
+- **REDIS_ADDR** — Default `127.0.0.1:6379`.
+- **REDIS_PASSWORD** — Optional; required for production Redis.
+- **REDIS_MAX_ITEMS** — Default 20 (max articles in the feed).
 
-See [docs/PRODUCTION_REDIS.md](docs/PRODUCTION_REDIS.md) for connecting to production Redis via SSH tunnel.
+Connection is retried a few times at startup if Redis is not ready. See [docs/PRODUCTION_REDIS.md](docs/PRODUCTION_REDIS.md) for connecting to production Redis via SSH tunnel.
 
 ## How It Works
 
 - **Bevy + bevy_mod_openxr** — Bevy handles rendering (wgpu); bevy_mod_openxr provides the OpenXR session, swapchain, and XR camera/views. We spawn world-space entities (diagram nodes, edges, light, Redis status quad, optional debug cube).
 - **Diagram** — One Startup system spawns nodes as quads, edges as thin cuboids, and an optional debug cube. Marker components (`DiagramNode`, `DiagramEdge`, `DebugCube`) identify diagram entities for future interaction.
 - **Redis status panel** — A 3D quad above the diagram shows connection state by color (red / yellow / green). Bevy’s `Text2d` is not rendered into the XR view, so the status is conveyed with the colored quad; the same status text is shown on the desktop window when present.
-- **Live feed** — Optional `redis_feed` module subscribes to Redis Pub/Sub; received articles are shown as text on the desktop window and drive the status (connecting / connected / disconnected).
+- **Live feed** — `redis_feed` module always subscribes to Redis (default channel `test` if `REDIS_CHANNELS` unset); connection is retried on failure. Received articles are shown as text on the desktop window; status bar shows connecting / connected / disconnected.
 
 The Rift CV1's Constellation tracking and the Quest 3's inside-out tracking are fully abstracted by OpenXR; no code changes needed between headsets.
 
@@ -83,6 +85,7 @@ northcloud-oculus/
 │   └── redis_feed.rs    — Redis Pub/Sub subscriber, LiveFeedBuffer, connection status
 ├── assets/
 │   └── fonts/           — FiraSans for feed/status text (desktop window)
+├── Taskfile.yml        — task run, run:prod (with .env), fetch-openxr, tunnel
 ├── scripts/
 │   └── fetch-openxr-loader.ps1 — Downloads openxr_loader.dll into target\release\
 ├── docs/
