@@ -13,8 +13,6 @@ fn main() {
     let out_dir = std::env::var("OUT_DIR").unwrap();
 
     let shaders = [
-        ("shaders/fullscreen.vert", shaderc::ShaderKind::Vertex),
-        ("shaders/solid.frag", shaderc::ShaderKind::Fragment),
         ("shaders/diagram.vert", shaderc::ShaderKind::Vertex),
         ("shaders/diagram.frag", shaderc::ShaderKind::Fragment),
     ];

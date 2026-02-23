@@ -1,7 +1,7 @@
 //! northcloud-oculus — UML diagram VR viewer
 //!
-//! Renders a viewer-only UML diagram (class boxes + edges as quad ribbons) in VR
-//! via OpenXR + Vulkan. Optional debug cube at (0, 0, -2): set NORTHCLOUD_DEBUG_CUBE=0 to disable.
+//! Renders a static (read-only) UML diagram (class boxes + edges as quad ribbons) in VR
+//! via OpenXR + Vulkan. Optional debug cube at (0, 0, -2): set NORTHCLOUD_DEBUG_CUBE=0 or false to disable.
 //!
 //! ## How it works
 //!
@@ -18,7 +18,7 @@
 //!    → C:\Program Files\Oculus\Support\oculus-runtime\oculus_openxr_64.json
 //! 3. Connect Rift CV1 (HDMI + USB sensors).
 //! 4. `cargo run --release`
-//! 5. Left eye = dark blue, right eye = dark red. Controller poses in console.
+//! 5. UML diagram boxes and edges visible in 3D. Debug cube at origin if enabled.
 //! 6. Ctrl+C or remove headset to exit.
 //!
 //! ## GPU requirements
@@ -177,7 +177,7 @@ fn cube_vertices() -> [[f32; 6]; 36] {
     let s = 0.1f32;
     let z = -2.0;
     let [r, g, b] = [0.0f32, 0.8, 0.2];
-    // 8 corners: (x, y, z) with x,y,z in {-s,s}, z in {z-s, z+s}
+    // 8 corners: x in {-s, s}, y in {-s, s}, z in {z-s, z+s}
     let p = |x: f32, y: f32, zf: f32| [x, y, zf, r, g, b];
     [
         // front (z = z+s toward camera)
@@ -285,11 +285,11 @@ struct Swapchain {
 }
 
 /// A single swapchain image's Vulkan resources.
+/// Note: depth is a shared image view (same handle across all framebuffers),
+/// owned and destroyed separately in cleanup — not stored here.
 struct Framebuffer {
     framebuffer: vk::Framebuffer,
     color: vk::ImageView,
-    #[allow(dead_code)]
-    depth: vk::ImageView,
 }
 
 fn main() -> Result<()> {
@@ -663,6 +663,12 @@ fn main() -> Result<()> {
     // =========================================================================
     // 16b. DEPTH IMAGE (shared by all framebuffers, multiview 2 layers)
     // =========================================================================
+    // INVARIANT: Single depth image is safe because we wait on fences[frame] before
+    // reusing the command buffer, ensuring the previous frame's depth writes complete.
+    // If PIPELINE_DEPTH > 2 or fence logic changes, consider per-swapchain-image depth.
+    // SAFETY: Vulkan device is valid. Image/memory/view are created in sequence and
+    // returned as a tuple. On early ? exit, prior allocations in this block may leak
+    // (acceptable for init-only code that terminates on failure).
     let (depth_image, depth_image_memory, depth_view) = unsafe {
         let depth_image = vk_device.create_image(
             &vk::ImageCreateInfo::default()
@@ -721,109 +727,7 @@ fn main() -> Result<()> {
     };
 
     // =========================================================================
-    // 17. SHADER LOADING + GRAPHICS PIPELINE
-    // =========================================================================
-    // Load SPIR-V shaders compiled by build.rs.
-    let vert_spv = read_spv(&mut Cursor::new(
-        &include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vert.spv"))[..],
-    ))?;
-    let frag_spv = read_spv(&mut Cursor::new(
-        &include_bytes!(concat!(env!("OUT_DIR"), "/solid.frag.spv"))[..],
-    ))?;
-
-    let pipeline_layout;
-    let pipeline;
-
-    unsafe {
-        let vert_module =
-            vk_device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&vert_spv), None)?;
-        let frag_module =
-            vk_device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&frag_spv), None)?;
-
-        pipeline_layout = vk_device
-            .create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default(), None)?;
-
-        let noop_stencil = vk::StencilOpState {
-            fail_op: vk::StencilOp::KEEP,
-            pass_op: vk::StencilOp::KEEP,
-            depth_fail_op: vk::StencilOp::KEEP,
-            compare_op: vk::CompareOp::ALWAYS,
-            ..Default::default()
-        };
-
-        pipeline = vk_device
-            .create_graphics_pipelines(
-                vk::PipelineCache::null(),
-                &[vk::GraphicsPipelineCreateInfo::default()
-                    .stages(&[
-                        vk::PipelineShaderStageCreateInfo::default()
-                            .stage(vk::ShaderStageFlags::VERTEX)
-                            .module(vert_module)
-                            .name(c"main"),
-                        vk::PipelineShaderStageCreateInfo::default()
-                            .stage(vk::ShaderStageFlags::FRAGMENT)
-                            .module(frag_module)
-                            .name(c"main"),
-                    ])
-                    .vertex_input_state(&vk::PipelineVertexInputStateCreateInfo::default())
-                    .input_assembly_state(
-                        &vk::PipelineInputAssemblyStateCreateInfo::default()
-                            .topology(vk::PrimitiveTopology::TRIANGLE_LIST),
-                    )
-                    .viewport_state(
-                        &vk::PipelineViewportStateCreateInfo::default()
-                            .scissor_count(1)
-                            .viewport_count(1),
-                    )
-                    .rasterization_state(
-                        &vk::PipelineRasterizationStateCreateInfo::default()
-                            .cull_mode(vk::CullModeFlags::NONE)
-                            .polygon_mode(vk::PolygonMode::FILL)
-                            .line_width(1.0),
-                    )
-                    .multisample_state(
-                        &vk::PipelineMultisampleStateCreateInfo::default()
-                            .rasterization_samples(vk::SampleCountFlags::TYPE_1),
-                    )
-                    .depth_stencil_state(
-                        &vk::PipelineDepthStencilStateCreateInfo::default()
-                            .depth_test_enable(false)
-                            .depth_write_enable(false)
-                            .front(noop_stencil)
-                            .back(noop_stencil),
-                    )
-                    .color_blend_state(
-                        &vk::PipelineColorBlendStateCreateInfo::default()
-                            .attachments(&[vk::PipelineColorBlendAttachmentState {
-                                blend_enable: vk::TRUE,
-                                src_color_blend_factor: vk::BlendFactor::ONE,
-                                dst_color_blend_factor: vk::BlendFactor::ZERO,
-                                color_blend_op: vk::BlendOp::ADD,
-                                color_write_mask: vk::ColorComponentFlags::RGBA,
-                                ..Default::default()
-                            }]),
-                    )
-                    .dynamic_state(
-                        &vk::PipelineDynamicStateCreateInfo::default()
-                            .dynamic_states(&[
-                                vk::DynamicState::VIEWPORT,
-                                vk::DynamicState::SCISSOR,
-                            ]),
-                    )
-                    .layout(pipeline_layout)
-                    .render_pass(render_pass)
-                    .subpass(0)],
-                None,
-            )
-            .map_err(|(_pipelines, err)| err)?[0];
-
-        // Shader modules can be destroyed after pipeline creation.
-        vk_device.destroy_shader_module(vert_module, None);
-        vk_device.destroy_shader_module(frag_module, None);
-    }
-
-    // =========================================================================
-    // 17b. DIAGRAM PIPELINE (debug cube + future UML boxes/ribbons)
+    // 17. DIAGRAM PIPELINE (UML boxes, edge ribbons, debug cube)
     // =========================================================================
     let diagram_vert_spv = read_spv(&mut Cursor::new(
         &include_bytes!(concat!(env!("OUT_DIR"), "/diagram.vert.spv"))[..],
@@ -832,7 +736,7 @@ fn main() -> Result<()> {
         &include_bytes!(concat!(env!("OUT_DIR"), "/diagram.frag.spv"))[..],
     ))?;
 
-    const PUSH_CONSTANT_SIZE: u32 = 2 * 16 * 4; // mat4[2] in bytes
+    const PUSH_CONSTANT_SIZE: u32 = std::mem::size_of::<[Mat4; 2]>() as u32;
 
     let diagram_pipeline_layout;
     let diagram_pipeline;
@@ -843,6 +747,10 @@ fn main() -> Result<()> {
     let diagram_box_count: u32;
     let diagram_ribbon_count: u32;
 
+    // SAFETY: Vulkan device is valid. Shader modules are created from SPIR-V compiled at
+    // build time. Buffer memory is HOST_VISIBLE|HOST_COHERENT so no flush needed.
+    // copy_nonoverlapping: src/dst don't overlap, dst is mapped with sufficient size.
+    // On early ? exit, prior allocations in this block may leak (acceptable for init code).
     unsafe {
         let d_vert =
             vk_device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&diagram_vert_spv), None)?;
@@ -918,7 +826,7 @@ fn main() -> Result<()> {
                     )
                     .rasterization_state(
                         &vk::PipelineRasterizationStateCreateInfo::default()
-                            .cull_mode(vk::CullModeFlags::BACK)
+                            .cull_mode(vk::CullModeFlags::NONE)
                             .polygon_mode(vk::PolygonMode::FILL)
                             .line_width(1.0),
                     )
@@ -996,6 +904,9 @@ fn main() -> Result<()> {
                 vk::WHOLE_SIZE,
                 vk::MemoryMapFlags::empty(),
             )?;
+            // SAFETY: map_memory returned a valid pointer for cube_mem_reqs.size bytes.
+            // cube_size <= cube_mem_reqs.size. Source (stack array) and dest (GPU mapped
+            // memory) do not overlap.
             std::ptr::copy_nonoverlapping(
                 cube_vertices.as_ptr() as *const u8,
                 ptr as *mut u8,
@@ -1043,6 +954,9 @@ fn main() -> Result<()> {
                 vk::WHOLE_SIZE,
                 vk::MemoryMapFlags::empty(),
             )?;
+            // SAFETY: map_memory returned a valid pointer for diagram_mem_reqs.size bytes.
+            // diagram_size <= diagram_mem_reqs.size. Source (heap Vec) and dest (GPU mapped
+            // memory) do not overlap.
             std::ptr::copy_nonoverlapping(
                 diagram_verts.as_ptr() as *const u8,
                 ptr as *mut u8,
@@ -1052,6 +966,13 @@ fn main() -> Result<()> {
         }
         diagram_buffer = diagram_buf;
     }
+
+    log::info!(
+        "Diagram pipeline created ({} box verts, {} ribbon verts, cube={})",
+        diagram_box_count,
+        diagram_ribbon_count,
+        if DEBUG_DRAW_CUBE { "enabled" } else { "disabled" },
+    );
 
     // =========================================================================
     // 18. COMMAND POOL + COMMAND BUFFERS
@@ -1149,7 +1070,6 @@ fn main() -> Result<()> {
                 Framebuffer {
                     framebuffer,
                     color,
-                    depth: depth_view,
                 }
             })
             .collect();
@@ -1284,29 +1204,35 @@ fn main() -> Result<()> {
         }
 
         // --- Locate head views (eye poses) ---
-        let (_, views) = session.locate_views(
+        let (view_flags, views) = session.locate_views(
             VIEW_TYPE,
             xr_frame_state.predicted_display_time,
             &stage,
         )?;
 
-        // View-projection per eye (for diagram, debug cube, future UI).
-        let view_proj: [Mat4; 2] = [
-            xr_math::view_proj_vulkan(
-                &views[0].pose,
-                &views[0].fov,
-                PROJECTION_NEAR,
-                PROJECTION_FAR,
-            ),
-            xr_math::view_proj_vulkan(
-                &views[1].pose,
-                &views[1].fov,
-                PROJECTION_NEAR,
-                PROJECTION_FAR,
-            ),
-        ];
+        if !view_flags.contains(
+            xr::ViewStateFlags::ORIENTATION_VALID | xr::ViewStateFlags::POSITION_VALID,
+        ) {
+            log::warn!("Head tracking lost (flags: {:?}), submitting empty frame", view_flags);
+            frame_stream.end(
+                xr_frame_state.predicted_display_time,
+                environment_blend_mode,
+                &[],
+            )?;
+            continue;
+        }
 
-        // Log head position (average of both eyes ≈ head center)
+        // View-projection per eye (for diagram, debug cube, UI).
+        let view_proj: [Mat4; 2] = std::array::from_fn(|i| {
+            xr_math::view_proj_vulkan(
+                &views[i].pose,
+                &views[i].fov,
+                PROJECTION_NEAR,
+                PROJECTION_FAR,
+            )
+        });
+
+        // Log head position (left eye pose, approximately head center)
         let head_pos = views[0].pose.position;
         log::debug!(
             "Head: ({:.3}, {:.3}, {:.3})",
@@ -1422,8 +1348,14 @@ fn main() -> Result<()> {
             let mut pc_data = [0f32; 32];
             pc_data[0..16].copy_from_slice(&view_proj[0].to_cols_array());
             pc_data[16..32].copy_from_slice(&view_proj[1].to_cols_array());
+            const _: () = assert!(
+                std::mem::size_of::<[f32; 32]>() == std::mem::size_of::<[Mat4; 2]>(),
+            );
+            // SAFETY: pc_data is a stack-allocated [f32; 32] (128 bytes = PUSH_CONSTANT_SIZE).
+            // Reinterpreting as &[u8] is valid: f32 has no padding, alignment of u8 is 1,
+            // and the slice lifetime is bounded by this scope.
             let pc_bytes: &[u8] =
-                std::slice::from_raw_parts(pc_data.as_ptr() as *const u8, PUSH_CONSTANT_SIZE as usize);
+                std::slice::from_raw_parts(pc_data.as_ptr() as *const u8, std::mem::size_of_val(&pc_data));
             vk_device.cmd_push_constants(
                 cmd,
                 diagram_pipeline_layout,
@@ -1537,8 +1469,6 @@ fn main() -> Result<()> {
         vk_device.free_memory(diagram_buffer_memory, None);
         vk_device.destroy_buffer(cube_buffer, None);
         vk_device.free_memory(cube_buffer_memory, None);
-        vk_device.destroy_pipeline(pipeline, None);
-        vk_device.destroy_pipeline_layout(pipeline_layout, None);
         vk_device.destroy_render_pass(render_pass, None);
 
         vk_device.destroy_device(None);
