@@ -5,13 +5,7 @@ edition = "2021"
 rust-version = "1.77"
 
 [dependencies]
-openxr = { version = "0.21", features = ["loaded"] }
-ash = { version = "0.38", default-features = false, features = ["loaded"] }
-glam = "0.32"
-anyhow = "1"
-log = "0.4"
-env_logger = "0.11"
-ctrlc = "3"
-
-[build-dependencies]
-shaderc = "0.8"
+bevy = "0.18"
+bevy_mod_xr = "0.5"
+bevy_mod_openxr = { version = "0.5", features = ["vulkan"] }
+openxr = "0.21"
