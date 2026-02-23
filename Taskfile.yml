@@ -1,0 +1,41 @@
+# https://taskfile.dev — run with: task <name>
+version: "3"
+
+tasks:
+  default:
+    desc: Run VR app (release)
+    cmds:
+      - task: run
+
+  build:
+    desc: Release build
+    cmds:
+      - cargo build --release
+
+  run:
+    desc: Run VR app (release); needs Oculus runtime + openxr_loader.dll
+    cmds:
+      - cargo run --release
+
+  fetch-openxr:
+    desc: Download openxr_loader.dll to target/release (run after clone or cargo clean)
+    cmds:
+      - pwsh -NoProfile -File scripts/fetch-openxr-loader.ps1
+
+  tunnel:
+    desc: SSH tunnel to production Redis (leave this terminal open)
+    cmds:
+      - pwsh -NoProfile -File scripts/tunnel-production-redis.ps1
+
+  run:prod:
+    desc: Run VR app with REDIS_* from .env (start tunnel in another terminal first)
+    dotenv:
+      - .env
+    cmds:
+      - cargo run --release
+
+  openxr:
+    desc: Fetch OpenXR loader then run
+    cmds:
+      - task: fetch-openxr
+      - task: run

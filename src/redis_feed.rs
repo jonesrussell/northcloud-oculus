@@ -8,6 +8,15 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RedisConnectionStatus {
+    #[default]
+    Disabled,
+    Connecting,
+    Connected,
+    Disconnected,
+}
+
 #[derive(Clone, Debug)]
 pub struct LiveArticle {
     #[allow(dead_code)]
@@ -93,21 +102,29 @@ impl RedisFeedConfig {
     }
 }
 
+pub enum FeedMessage {
+    Connected,
+    Disconnected,
+    Article(LiveArticle),
+}
+
 #[derive(Debug)]
-pub struct RedisReceiver(pub Mutex<mpsc::Receiver<LiveArticle>>);
+pub struct RedisReceiver(pub Mutex<mpsc::Receiver<FeedMessage>>);
 
 #[derive(Debug, bevy::prelude::Resource)]
 pub struct LiveFeedBuffer {
     pub items: VecDeque<LiveArticle>,
     pub max_items: usize,
+    pub connection_status: RedisConnectionStatus,
     pub receiver: Option<RedisReceiver>,
 }
 
 impl LiveFeedBuffer {
-    pub fn new(receiver: mpsc::Receiver<LiveArticle>, max_items: usize) -> Self {
+    pub fn new(receiver: mpsc::Receiver<FeedMessage>, max_items: usize) -> Self {
         LiveFeedBuffer {
             items: VecDeque::new(),
             max_items: max_items.max(1),
+            connection_status: RedisConnectionStatus::Connecting,
             receiver: Some(RedisReceiver(Mutex::new(receiver))),
         }
     }
@@ -116,6 +133,7 @@ impl LiveFeedBuffer {
         LiveFeedBuffer {
             items: VecDeque::new(),
             max_items: max_items.max(1),
+            connection_status: RedisConnectionStatus::Disabled,
             receiver: None,
         }
     }
@@ -138,10 +156,14 @@ impl LiveFeedBuffer {
                 Ok(g) => g,
                 Err(_) => return,
             };
-            let items: Vec<LiveArticle> = guard.try_iter().collect();
+            let messages: Vec<FeedMessage> = guard.try_iter().collect();
             drop(guard);
-            for item in items {
-                self.push(item);
+            for msg in messages {
+                match msg {
+                    FeedMessage::Connected => self.connection_status = RedisConnectionStatus::Connected,
+                    FeedMessage::Disconnected => self.connection_status = RedisConnectionStatus::Disconnected,
+                    FeedMessage::Article(a) => self.push(a),
+                }
             }
         }
     }
@@ -162,7 +184,7 @@ fn log_parse_error(last_log: &mut Instant, count: &AtomicU32, channel: &str, err
     }
 }
 
-pub fn spawn_subscriber(config: RedisFeedConfig) -> Option<mpsc::Receiver<LiveArticle>> {
+pub fn spawn_subscriber(config: RedisFeedConfig) -> Option<mpsc::Receiver<FeedMessage>> {
     let (tx, rx) = mpsc::sync_channel(128);
 
     let addr = config.addr.clone();
@@ -183,7 +205,7 @@ fn run_subscriber_loop(
     addr: String,
     password: Option<String>,
     channels: Vec<String>,
-    tx: mpsc::SyncSender<LiveArticle>,
+    tx: mpsc::SyncSender<FeedMessage>,
 ) {
     let url = match &password {
         Some(p) => format!("redis://:{}@{}", p, addr),
@@ -193,6 +215,7 @@ fn run_subscriber_loop(
         Ok(c) => c,
         Err(e) => {
             eprintln!("[redis_feed] Redis connection failed, live feed disabled: {}", e);
+            let _ = tx.send(FeedMessage::Disconnected);
             return;
         }
     };
@@ -201,6 +224,7 @@ fn run_subscriber_loop(
         Ok(c) => c,
         Err(e) => {
             eprintln!("[redis_feed] Redis connection failed, live feed disabled: {}", e);
+            let _ = tx.send(FeedMessage::Disconnected);
             return;
         }
     };
@@ -213,9 +237,11 @@ fn run_subscriber_loop(
                 "[redis_feed] Redis subscribe to {:?} failed, live feed disabled: {}",
                 ch, e
             );
+            let _ = tx.send(FeedMessage::Disconnected);
             return;
         }
     }
+    let _ = tx.send(FeedMessage::Connected);
 
     let mut last_log = Instant::now();
     let parse_error_count = AtomicU32::new(0);
@@ -225,7 +251,8 @@ fn run_subscriber_loop(
             Ok(m) => m,
             Err(e) => {
                 eprintln!("[redis_feed] get_message error: {}", e);
-                continue;
+                let _ = tx.send(FeedMessage::Disconnected);
+                break;
             }
         };
         let channel_name = msg.get_channel_name().to_string();
@@ -262,7 +289,7 @@ fn run_subscriber_loop(
             }
         };
         let article = LiveArticle::from_raw(raw, channel_name);
-        if tx.send(article).is_err() {
+        if tx.send(FeedMessage::Article(article)).is_err() {
             break;
         }
     }

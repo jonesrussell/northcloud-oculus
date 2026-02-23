@@ -15,7 +15,7 @@ use bevy::sprite::Text2d;
 use bevy_mod_openxr::{add_xr_plugins, resources::OxrSessionConfig};
 use openxr::EnvironmentBlendMode;
 
-use redis_feed::{LiveFeedBuffer, RedisFeedConfig, spawn_subscriber};
+use redis_feed::{LiveFeedBuffer, RedisConnectionStatus, RedisFeedConfig, spawn_subscriber};
 
 // --- Marker components (cleanup, future interaction) ---
 
@@ -30,6 +30,9 @@ struct DebugCube;
 
 #[derive(Component)]
 struct LiveFeedPanel;
+
+#[derive(Component)]
+struct RedisStatusPanel;
 
 // --- Diagram model (same as prior Vulkan version) ---
 
@@ -90,8 +93,8 @@ fn main() -> AppExit {
         })
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(live_feed_buffer)
-        .add_systems(Startup, (setup_diagram, setup_feed_panel).chain())
-        .add_systems(Update, (drain_redis_feed, update_feed_panel).chain())
+        .add_systems(Startup, (setup_diagram, setup_feed_panel, setup_redis_status_panel).chain())
+        .add_systems(Update, (drain_redis_feed, update_feed_panel, update_redis_status_panel).chain())
         .run()
 }
 
@@ -218,4 +221,37 @@ fn setup_feed_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
             .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
         LiveFeedPanel,
     ));
+}
+
+fn setup_redis_status_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
+    let font = asset_server.load("fonts/FiraSans-Bold.ttf");
+    commands.spawn((
+        Text2d::new("Redis: —"),
+        TextFont {
+            font: font.into(),
+            font_size: 20.0,
+            ..default()
+        },
+        TextColor(Color::srgb(0.7, 0.7, 0.7)),
+        Transform::from_xyz(-0.8, -0.5, -2.0)
+            .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+        RedisStatusPanel,
+    ));
+}
+
+fn update_redis_status_panel(
+    buffer: Res<LiveFeedBuffer>,
+    mut query: Query<(&mut Text2d, &mut TextColor), With<RedisStatusPanel>>,
+) {
+    let Some((mut text, mut color)) = query.iter_mut().next() else {
+        return;
+    };
+    let (label, c) = match buffer.connection_status {
+        RedisConnectionStatus::Disabled => ("Redis: disabled", Color::srgb(0.5, 0.5, 0.5)),
+        RedisConnectionStatus::Connecting => ("Redis: connecting…", Color::srgb(0.9, 0.8, 0.2)),
+        RedisConnectionStatus::Connected => ("Redis: connected", Color::srgb(0.2, 0.85, 0.4)),
+        RedisConnectionStatus::Disconnected => ("Redis: disconnected", Color::srgb(0.9, 0.3, 0.2)),
+    };
+    *text = Text2d::new(label.to_string());
+    *color = TextColor(c);
 }
