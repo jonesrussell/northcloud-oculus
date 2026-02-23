@@ -5,6 +5,7 @@ edition = "2021"
 rust-version = "1.77"
 
 [dependencies]
+ab_glyph = "0.2"
 bevy = "0.18"
 bevy_mod_xr = "0.5"
 bevy_mod_openxr = { version = "0.5", features = ["vulkan"] }

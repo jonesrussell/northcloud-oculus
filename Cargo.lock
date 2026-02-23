@@ -3477,6 +3477,7 @@ checksum = "610a5acd306ec67f907abe5567859a3c693fb9886eb1f012ab8f2a47bef3db51"
 name = "northcloud-oculus"
 version = "0.3.0"
 dependencies = [
+ "ab_glyph",
  "bevy",
  "bevy_mod_openxr",
  "bevy_mod_xr",

@@ -8,14 +8,18 @@
 //! Run with: `cargo run --release` (requires Oculus runtime + openxr_loader.dll).
 
 mod redis_feed;
+mod text_texture;
 
 use bevy::prelude::*;
 use bevy::render::pipelined_rendering::PipelinedRenderingPlugin;
+use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::sprite::Text2d;
 use bevy_mod_openxr::{add_xr_plugins, resources::OxrSessionConfig};
 use openxr::EnvironmentBlendMode;
+use std::path::Path;
 
 use redis_feed::{LiveFeedBuffer, RedisConnectionStatus, RedisFeedConfig, spawn_subscriber};
+use text_texture::{load_font, render_lines_to_rgba, render_text_to_rgba};
 
 // --- Marker components (cleanup, future interaction) ---
 
@@ -46,6 +50,25 @@ struct RedisStatusMaterials {
     connected: Handle<StandardMaterial>,
     disconnected: Handle<StandardMaterial>,
 }
+
+/// Font for VR text rasterization (loaded from assets/fonts at startup).
+#[derive(Resource)]
+struct VrTextFont(pub Option<ab_glyph::FontRef<'static>>);
+
+/// Handles to the VR text textures so update systems can refresh their content.
+#[derive(Resource)]
+struct VrTextTextureHandles {
+    redis_status: Handle<Image>,
+    live_feed: Handle<Image>,
+}
+
+/// 3D quad showing Redis status as rasterized text (visible in XR).
+#[derive(Component)]
+struct VrRedisStatusTextQuad;
+
+/// 3D quad showing live feed lines as rasterized text (visible in XR).
+#[derive(Component)]
+struct VrLiveFeedTextQuad;
 
 // --- Diagram model (same as prior Vulkan version) ---
 
@@ -106,8 +129,27 @@ fn main() -> AppExit {
         })
         .insert_resource(ClearColor(Color::BLACK))
         .insert_resource(live_feed_buffer)
-        .add_systems(Startup, (setup_diagram, setup_feed_panel, setup_redis_status_panel).chain())
-        .add_systems(Update, (drain_redis_feed, update_feed_panel, update_redis_status_panel).chain())
+        .add_systems(
+            Startup,
+            (
+                setup_diagram,
+                setup_feed_panel,
+                setup_redis_status_panel,
+                setup_vr_text_font,
+                setup_vr_text_quads,
+            )
+                .chain(),
+        )
+        .add_systems(
+            Update,
+            (
+                drain_redis_feed,
+                update_feed_panel,
+                update_redis_status_panel,
+                update_vr_text_textures,
+            )
+                .chain(),
+        )
         .run()
 }
 
@@ -224,13 +266,104 @@ fn update_feed_panel(
     *text = Text2d::new(content);
 }
 
-fn setup_feed_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
+fn setup_vr_text_font(mut commands: Commands) {
+    let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/fonts/FiraSans-Bold.ttf");
+    let font = load_font(&path);
+    if font.is_none() {
+        eprintln!("[vr-text] No font at {:?}, VR text quads will not be created", path);
+        eprintln!("[vr-text] Add FiraSans-Bold.ttf to assets/fonts/ for text in headset");
+    }
+    commands.insert_resource(VrTextFont(font));
+}
+
+fn setup_vr_text_quads(
+    mut commands: Commands,
+    vr_font: Option<Res<VrTextFont>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let Some(vr) = vr_font else {
+        return;
+    };
+    let Some(ref font) = vr.0 else {
+        return;
+    };
+    const REDIS_W: u32 = 320;
+    const REDIS_H: u32 = 64;
+    const FEED_W: u32 = 512;
+    const FEED_H: u32 = 256;
+
+    let redis_data = render_text_to_rgba(font, "Redis: disconnected", REDIS_W, REDIS_H, 28.0, 230, 76, 51);
+    let redis_image = Image::new(
+        Extent3d {
+            width: REDIS_W,
+            height: REDIS_H,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        redis_data,
+        TextureFormat::Rgba8UnormSrgb,
+        default(),
+    );
+    let redis_handle = images.add(redis_image);
+
+    let feed_lines = vec!["Live feed (set REDIS_CHANNELS)".to_string()];
+    let feed_data = render_lines_to_rgba(font, &feed_lines, FEED_W, FEED_H, 20.0, 230, 230, 230);
+    let feed_image = Image::new(
+        Extent3d {
+            width: FEED_W,
+            height: FEED_H,
+            depth_or_array_layers: 1,
+        },
+        TextureDimension::D2,
+        feed_data,
+        TextureFormat::Rgba8UnormSrgb,
+        default(),
+    );
+    let feed_handle = images.add(feed_image);
+
+    commands.insert_resource(VrTextTextureHandles {
+        redis_status: redis_handle.clone(),
+        live_feed: feed_handle.clone(),
+    });
+
+    // Slightly in front of the colored Redis status quad (z -1.95) so text is visible on top
+    let redis_pos = Vec3::new(0.0, 0.55, -1.93);
+    let redis_material = materials.add(StandardMaterial {
+        base_color_texture: Some(redis_handle),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.32, 0.064, 0.002))),
+        MeshMaterial3d(redis_material),
+        Transform::from_translation(redis_pos),
+        VrRedisStatusTextQuad,
+    ));
+
+    let feed_pos = Vec3::new(-0.8, 0.0, -2.0);
+    let feed_material = materials.add(StandardMaterial {
+        base_color_texture: Some(feed_handle),
+        alpha_mode: AlphaMode::Blend,
+        unlit: true,
+        ..default()
+    });
+    commands.spawn((
+        Mesh3d(meshes.add(Cuboid::new(0.5, 0.25, 0.002))),
+        MeshMaterial3d(feed_material),
+        Transform::from_translation(feed_pos).with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+        VrLiveFeedTextQuad,
+    ));
+    eprintln!("[vr-text] VR text quads spawned (visible in headset)");
+}
+
+fn setup_feed_panel(mut commands: Commands) {
     eprintln!("[debug] setup_feed_panel running");
-    let font = asset_server.load("fonts/FiraSans-Bold.ttf");
     commands.spawn((
         Text2d::new("Live feed (set REDIS_CHANNELS to subscribe)"),
         TextFont {
-            font: font.into(),
             font_size: 24.0,
             ..default()
         },
@@ -244,17 +377,14 @@ fn setup_feed_panel(mut commands: Commands, asset_server: Res<AssetServer>) {
 
 fn setup_redis_status_panel(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
 ) {
     eprintln!("[debug] setup_redis_status_panel running");
     let pos = Vec3::new(0.0, 0.55, -1.95);
-    let font = asset_server.load("fonts/FiraSans-Bold.ttf");
     commands.spawn((
         Text2d::new("Redis: disconnected"),
         TextFont {
-            font: font.into(),
             font_size: 22.0,
             ..default()
         },
@@ -322,5 +452,74 @@ fn update_redis_status_panel(
     }
     for mut mesh_mat in quad_query.iter_mut() {
         *mesh_mat = MeshMaterial3d::<StandardMaterial>(material_handle.clone());
+    }
+}
+
+const VR_REDIS_TEXT_W: u32 = 320;
+const VR_REDIS_TEXT_H: u32 = 64;
+const VR_FEED_TEXT_W: u32 = 512;
+const VR_FEED_TEXT_H: u32 = 256;
+const VR_FEED_MAX_LINES: usize = 10;
+const VR_FEED_TITLE_LEN: usize = 50;
+
+fn update_vr_text_textures(
+    vr_font: Option<Res<VrTextFont>>,
+    handles: Option<Res<VrTextTextureHandles>>,
+    buffer: Res<LiveFeedBuffer>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let Some(vr) = vr_font else {
+        return;
+    };
+    let Some(ref font) = vr.0 else {
+        return;
+    };
+    let Some(handles) = handles else {
+        return;
+    };
+    let redis_label = match buffer.connection_status {
+        RedisConnectionStatus::Disabled => "Redis: disconnected",
+        RedisConnectionStatus::Connecting => "Redis: connecting…",
+        RedisConnectionStatus::Connected => "Redis: connected",
+        RedisConnectionStatus::Disconnected => "Redis: disconnected",
+    };
+    let (r, g, b) = match buffer.connection_status {
+        RedisConnectionStatus::Connected => (51, 217, 102),
+        RedisConnectionStatus::Connecting => (230, 204, 51),
+        _ => (230, 76, 51),
+    };
+    if let Some(img) = images.get_mut(&handles.redis_status) {
+        let data = render_text_to_rgba(font, redis_label, VR_REDIS_TEXT_W, VR_REDIS_TEXT_H, 28.0, r, g, b);
+        img.data = Some(data);
+    }
+    let lines: Vec<String> = buffer
+        .items
+        .iter()
+        .rev()
+        .take(VR_FEED_MAX_LINES)
+        .map(|a| {
+            let title = a.title.chars().take(VR_FEED_TITLE_LEN).collect::<String>();
+            let suffix = if a.title.len() > VR_FEED_TITLE_LEN { "…" } else { "" };
+            let q = a.quality_score.map(|s| format!(" q{}", s)).unwrap_or_default();
+            format!("[{}] {}{} | {}", a.channel, title, suffix, q)
+        })
+        .collect();
+    let lines_ref: Vec<String> = if lines.is_empty() {
+        vec!["Live feed (set REDIS_CHANNELS to subscribe)".to_string()]
+    } else {
+        lines
+    };
+    if let Some(img) = images.get_mut(&handles.live_feed) {
+        let data = render_lines_to_rgba(
+            font,
+            &lines_ref,
+            VR_FEED_TEXT_W,
+            VR_FEED_TEXT_H,
+            20.0,
+            230,
+            230,
+            230,
+        );
+        img.data = Some(data);
     }
 }
