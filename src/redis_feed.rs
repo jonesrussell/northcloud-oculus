@@ -1,7 +1,4 @@
 //! Redis Pub/Sub feed for north-cloud publisher messages.
-//!
-//! Subscriber thread is fire-and-forget: no join handle or cancellation token;
-//! it is terminated when the process exits.
 
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicU32, Ordering};
@@ -11,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use serde::Deserialize;
 
-/// Minimal fields we need for the VR feed. Serde ignores the rest of the JSON.
 #[derive(Clone, Debug)]
 pub struct LiveArticle {
     #[allow(dead_code)]
@@ -60,7 +56,6 @@ impl LiveArticle {
     }
 }
 
-/// Configuration for the Redis live feed (from env).
 #[derive(Clone, Debug)]
 pub struct RedisFeedConfig {
     pub addr: String,
@@ -70,7 +65,6 @@ pub struct RedisFeedConfig {
 }
 
 impl RedisFeedConfig {
-    /// Load config from environment. Returns `None` if REDIS_CHANNELS is missing, empty, or malformed.
     pub fn from_env() -> Option<Self> {
         let addr = std::env::var("REDIS_ADDR").unwrap_or_else(|_| "127.0.0.1:6379".to_string());
         let password = std::env::var("REDIS_PASSWORD").ok();
@@ -99,18 +93,13 @@ impl RedisFeedConfig {
     }
 }
 
-/// Receiver is only read by the drain system; wrapped in Mutex so LiveFeedBuffer is Sync.
 #[derive(Debug)]
 pub struct RedisReceiver(pub Mutex<mpsc::Receiver<LiveArticle>>);
 
-/// Bounded buffer of live articles plus optional receiver to drain.
-/// When disabled (no Redis), receiver is None and drain is a no-op.
 #[derive(Debug, bevy::prelude::Resource)]
 pub struct LiveFeedBuffer {
     pub items: VecDeque<LiveArticle>,
     pub max_items: usize,
-    /// Only the drain system reads from this; no other system touches it.
-    /// None when live feed is disabled.
     pub receiver: Option<RedisReceiver>,
 }
 
@@ -123,7 +112,6 @@ impl LiveFeedBuffer {
         }
     }
 
-    /// Disabled buffer (no Redis); drain is a no-op.
     pub fn disabled(max_items: usize) -> Self {
         LiveFeedBuffer {
             items: VecDeque::new(),
@@ -137,7 +125,6 @@ impl LiveFeedBuffer {
         self.receiver.is_some()
     }
 
-    /// Push one item and truncate from the front if over capacity. O(1).
     pub fn push(&mut self, item: LiveArticle) {
         self.items.push_back(item);
         while self.items.len() > self.max_items {
@@ -145,7 +132,6 @@ impl LiveFeedBuffer {
         }
     }
 
-    /// Drain available messages from the receiver and push onto the buffer. No-op when disabled.
     pub fn drain_receiver(&mut self) {
         if let Some(r) = &self.receiver {
             let guard = match r.0.lock() {
@@ -161,7 +147,6 @@ impl LiveFeedBuffer {
     }
 }
 
-/// Rate-limited parse error logging: log at most once per interval or every N failures.
 const PARSE_LOG_INTERVAL: Duration = Duration::from_secs(5);
 const PARSE_LOG_EVERY_N: u32 = 50;
 
@@ -177,8 +162,6 @@ fn log_parse_error(last_log: &mut Instant, count: &AtomicU32, channel: &str, err
     }
 }
 
-/// Spawns the subscriber thread (fire-and-forget) and returns the receiver.
-/// On connection or subscribe failure, logs once and returns `None`.
 pub fn spawn_subscriber(config: RedisFeedConfig) -> Option<mpsc::Receiver<LiveArticle>> {
     let (tx, rx) = mpsc::sync_channel(128);
 

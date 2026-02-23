@@ -28,7 +28,6 @@ struct DiagramEdge;
 #[derive(Component)]
 struct DebugCube;
 
-/// Marker for the live-feed panel entity (single Text2d, world-space).
 #[derive(Component)]
 struct LiveFeedPanel;
 
@@ -96,7 +95,6 @@ fn main() -> AppExit {
         .run()
 }
 
-/// Build LiveFeedBuffer from env: spawn subscriber if config valid, else disabled buffer.
 fn init_live_feed_buffer() -> LiveFeedBuffer {
     if let Some(config) = RedisFeedConfig::from_env() {
         if let Some(receiver) = spawn_subscriber(config.clone()) {
@@ -170,13 +168,10 @@ fn setup_diagram(
     ));
 }
 
-// --- Live feed (Redis → VR panel) ---
-
 fn drain_redis_feed(mut buffer: ResMut<LiveFeedBuffer>) {
     buffer.drain_receiver();
 }
 
-/// Rebuild the feed panel text from the buffer each frame. Runs after drain_redis_feed.
 fn update_feed_panel(
     buffer: Res<LiveFeedBuffer>,
     mut panel_query: Query<&mut Text2d, With<LiveFeedPanel>>,
