@@ -1,7 +1,7 @@
-//! northcloud-oculus — Minimal OpenXR + Vulkan VR prototype
+//! northcloud-oculus — UML diagram VR viewer
 //!
-//! Renders a solid color per eye (blue left, red right) to an Oculus Rift CV1
-//! via the Oculus OpenXR runtime. Logs head and controller poses each frame.
+//! Renders a static (read-only) UML diagram (class boxes + edges as quad ribbons) in VR
+//! via OpenXR + Vulkan. Optional debug cube at (0, 0, -2): set NORTHCLOUD_DEBUG_CUBE=0 or false to disable.
 //!
 //! ## How it works
 //!
@@ -18,7 +18,7 @@
 //!    → C:\Program Files\Oculus\Support\oculus-runtime\oculus_openxr_64.json
 //! 3. Connect Rift CV1 (HDMI + USB sensors).
 //! 4. `cargo run --release`
-//! 5. Left eye = dark blue, right eye = dark red. Controller poses in console.
+//! 5. UML diagram boxes and edges visible in 3D. Debug cube at origin if enabled.
 //! 6. Ctrl+C or remove headset to exit.
 //!
 //! ## GPU requirements
@@ -39,12 +39,18 @@ use std::{
 
 use anyhow::{bail, Context, Result};
 use ash::{util::read_spv, vk::{self, Handle}};
+use glam::{Mat4, Vec2, Vec3};
 use openxr as xr;
+
+mod xr_math;
 
 // --- Constants ---
 
 /// Vulkan color format for swapchain images.
 const COLOR_FORMAT: vk::Format = vk::Format::R8G8B8A8_SRGB;
+
+/// Depth format for the diagram/debug pass (must support depth attachment).
+const DEPTH_FORMAT: vk::Format = vk::Format::D32_SFLOAT;
 
 /// Number of views (eyes) for stereo rendering.
 const VIEW_COUNT: u32 = 2;
@@ -55,6 +61,169 @@ const VIEW_TYPE: xr::ViewConfigurationType = xr::ViewConfigurationType::PRIMARY_
 /// Number of frames that can be in-flight simultaneously.
 /// 2 = double-buffering: one frame rendering while the previous is displayed.
 const PIPELINE_DEPTH: u32 = 2;
+
+/// Near and far plane distances (meters) for view-projection.
+const PROJECTION_NEAR: f32 = 0.01;
+const PROJECTION_FAR: f32 = 100.0;
+
+/// Enable debug mode: draw a test cube at (0, 0, -2) to validate view/projection.
+const DEBUG_DRAW_CUBE: bool = true;
+
+// --- Diagram model (UML viewer) ---
+
+/// Diagram node (class box): stable id (for edges and later selection/hover), position, size, color.
+#[derive(Clone, Debug)]
+struct Node {
+    #[allow(dead_code)]
+    id: u32,
+    pos: Vec3,
+    size: Vec2,
+    color: Vec3,
+}
+
+/// Diagram edge: connects two nodes by index.
+#[derive(Clone, Debug)]
+struct Edge {
+    from: usize,
+    to: usize,
+}
+
+/// Hardcoded diagram: a few nodes and edges in diagram space (Y up, diagram at Z = -2).
+fn sample_diagram() -> (Vec<Node>, Vec<Edge>) {
+    let nodes = vec![
+        Node {
+            id: 0,
+            pos: Vec3::new(-0.5, 0.2, -2.0),
+            size: Vec2::new(0.4, 0.3),
+            color: Vec3::new(0.2, 0.4, 0.9),
+        },
+        Node {
+            id: 1,
+            pos: Vec3::new(0.0, -0.2, -2.0),
+            size: Vec2::new(0.35, 0.25),
+            color: Vec3::new(0.9, 0.35, 0.2),
+        },
+        Node {
+            id: 2,
+            pos: Vec3::new(0.6, 0.15, -2.0),
+            size: Vec2::new(0.4, 0.28),
+            color: Vec3::new(0.2, 0.75, 0.4),
+        },
+    ];
+    let edges = vec![Edge { from: 0, to: 1 }, Edge { from: 1, to: 2 }];
+    (nodes, edges)
+}
+
+/// Build vertex data for boxes (6 vertices per node) then edge ribbons (6 vertices per edge).
+/// Returns (vertices, box_vertex_count, ribbon_vertex_count).
+fn build_diagram_vertices(nodes: &[Node], edges: &[Edge]) -> (Vec<[f32; 6]>, u32, u32) {
+    let mut vertices = Vec::with_capacity(nodes.len() * 6 + edges.len() * 6);
+    let edge_color = Vec3::new(0.5, 0.5, 0.5);
+    const RIBBON_HALF_WIDTH: f32 = 0.008;
+
+    for node in nodes {
+        let [cx, cy, cz] = node.pos.to_array();
+        let hw = node.size.x * 0.5;
+        let hh = node.size.y * 0.5;
+        let [r, g, b] = node.color.to_array();
+        // Quad in plane z = cz: corners (cx±hw, cy±hh, cz), two triangles.
+        let corners = [
+            [cx - hw, cy - hh, cz, r, g, b],
+            [cx + hw, cy - hh, cz, r, g, b],
+            [cx + hw, cy + hh, cz, r, g, b],
+            [cx - hw, cy + hh, cz, r, g, b],
+        ];
+        vertices.push(corners[0]);
+        vertices.push(corners[1]);
+        vertices.push(corners[2]);
+        vertices.push(corners[0]);
+        vertices.push(corners[2]);
+        vertices.push(corners[3]);
+    }
+    let box_count = vertices.len() as u32;
+
+    for edge in edges {
+        let a = nodes[edge.from].pos;
+        let b_pt = nodes[edge.to].pos;
+        let d = b_pt - a;
+        let len_xy = (d.x * d.x + d.y * d.y).sqrt();
+        let (px, py) = if len_xy > 1e-6 {
+            (-d.y / len_xy * RIBBON_HALF_WIDTH, d.x / len_xy * RIBBON_HALF_WIDTH)
+        } else {
+            (RIBBON_HALF_WIDTH, 0.0)
+        };
+        let [r, g, b] = edge_color.to_array();
+        let [ax, ay, az] = a.to_array();
+        let [bx, by, bz] = b_pt.to_array();
+        let corners = [
+            [ax - px, ay - py, az, r, g, b],
+            [ax + px, ay + py, az, r, g, b],
+            [bx + px, by + py, bz, r, g, b],
+            [bx - px, by - py, bz, r, g, b],
+        ];
+        vertices.push(corners[0]);
+        vertices.push(corners[1]);
+        vertices.push(corners[2]);
+        vertices.push(corners[0]);
+        vertices.push(corners[2]);
+        vertices.push(corners[3]);
+    }
+    let ribbon_count = vertices.len() as u32 - box_count;
+    (vertices, box_count, ribbon_count)
+}
+
+/// Cube centered at (0, 0, -2), half-size 0.1. Returns 36 vertices, each [x, y, z, r, g, b].
+fn cube_vertices() -> [[f32; 6]; 36] {
+    let s = 0.1f32;
+    let z = -2.0;
+    let [r, g, b] = [0.0f32, 0.8, 0.2];
+    // 8 corners: x in {-s, s}, y in {-s, s}, z in {z-s, z+s}
+    let p = |x: f32, y: f32, zf: f32| [x, y, zf, r, g, b];
+    [
+        // front (z = z+s toward camera)
+        p(s, s, z + s),
+        p(-s, s, z + s),
+        p(-s, -s, z + s),
+        p(s, s, z + s),
+        p(-s, -s, z + s),
+        p(s, -s, z + s),
+        // back
+        p(s, s, z - s),
+        p(s, -s, z - s),
+        p(-s, -s, z - s),
+        p(s, s, z - s),
+        p(-s, -s, z - s),
+        p(-s, s, z - s),
+        // right (x = s)
+        p(s, s, z + s),
+        p(s, -s, z + s),
+        p(s, -s, z - s),
+        p(s, s, z + s),
+        p(s, -s, z - s),
+        p(s, s, z - s),
+        // left (x = -s)
+        p(-s, s, z - s),
+        p(-s, -s, z - s),
+        p(-s, -s, z + s),
+        p(-s, s, z - s),
+        p(-s, -s, z + s),
+        p(-s, s, z + s),
+        // top (y = s)
+        p(s, s, z + s),
+        p(s, s, z - s),
+        p(-s, s, z - s),
+        p(s, s, z + s),
+        p(-s, s, z - s),
+        p(-s, s, z + s),
+        // bottom (y = -s)
+        p(s, -s, z - s),
+        p(s, -s, z + s),
+        p(-s, -s, z + s),
+        p(s, -s, z - s),
+        p(-s, -s, z + s),
+        p(-s, -s, z - s),
+    ]
+}
 
 /// Tries to load the OpenXR loader from default path, then VULKAN_SDK\\Bin, then C:\\VulkanSDK, then OPENXR_LOADER_PATH.
 fn load_openxr_entry() -> Result<xr::Entry> {
@@ -116,6 +285,8 @@ struct Swapchain {
 }
 
 /// A single swapchain image's Vulkan resources.
+/// Note: depth is a shared image view (same handle across all framebuffers),
+/// owned and destroyed separately in cleanup — not stored here.
 struct Framebuffer {
     framebuffer: vk::Framebuffer,
     color: vk::ImageView,
@@ -439,27 +610,45 @@ fn main() -> Result<()> {
     let render_pass = unsafe {
         vk_device.create_render_pass(
             &vk::RenderPassCreateInfo::default()
-                .attachments(&[vk::AttachmentDescription {
-                    format: COLOR_FORMAT,
-                    samples: vk::SampleCountFlags::TYPE_1,
-                    load_op: vk::AttachmentLoadOp::CLEAR,
-                    store_op: vk::AttachmentStoreOp::STORE,
-                    initial_layout: vk::ImageLayout::UNDEFINED,
-                    final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
-                    ..Default::default()
-                }])
+                .attachments(&[
+                    vk::AttachmentDescription {
+                        format: COLOR_FORMAT,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        load_op: vk::AttachmentLoadOp::CLEAR,
+                        store_op: vk::AttachmentStoreOp::STORE,
+                        initial_layout: vk::ImageLayout::UNDEFINED,
+                        final_layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
+                        ..Default::default()
+                    },
+                    vk::AttachmentDescription {
+                        format: DEPTH_FORMAT,
+                        samples: vk::SampleCountFlags::TYPE_1,
+                        load_op: vk::AttachmentLoadOp::CLEAR,
+                        store_op: vk::AttachmentStoreOp::DONT_CARE,
+                        initial_layout: vk::ImageLayout::UNDEFINED,
+                        final_layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                        ..Default::default()
+                    },
+                ])
                 .subpasses(&[vk::SubpassDescription::default()
                     .color_attachments(&[vk::AttachmentReference {
                         attachment: 0,
                         layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL,
                     }])
+                    .depth_stencil_attachment(&vk::AttachmentReference {
+                        attachment: 1,
+                        layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+                    })
                     .pipeline_bind_point(vk::PipelineBindPoint::GRAPHICS)])
                 .dependencies(&[vk::SubpassDependency {
                     src_subpass: vk::SUBPASS_EXTERNAL,
                     dst_subpass: 0,
-                    src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                    dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+                    src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                    dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT
+                        | vk::PipelineStageFlags::EARLY_FRAGMENT_TESTS,
+                    dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_WRITE
+                        | vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE,
                     ..Default::default()
                 }])
                 .push_next(
@@ -472,27 +661,112 @@ fn main() -> Result<()> {
     };
 
     // =========================================================================
-    // 17. SHADER LOADING + GRAPHICS PIPELINE
+    // 16b. DEPTH IMAGE (shared by all framebuffers, multiview 2 layers)
     // =========================================================================
-    // Load SPIR-V shaders compiled by build.rs.
-    let vert_spv = read_spv(&mut Cursor::new(
-        &include_bytes!(concat!(env!("OUT_DIR"), "/fullscreen.vert.spv"))[..],
+    // INVARIANT: Single depth image is safe because we wait on fences[frame] before
+    // reusing the command buffer, ensuring the previous frame's depth writes complete.
+    // If PIPELINE_DEPTH > 2 or fence logic changes, consider per-swapchain-image depth.
+    // SAFETY: Vulkan device is valid. Image/memory/view are created in sequence and
+    // returned as a tuple. On early ? exit, prior allocations in this block may leak
+    // (acceptable for init-only code that terminates on failure).
+    let (depth_image, depth_image_memory, depth_view) = unsafe {
+        let depth_image = vk_device.create_image(
+            &vk::ImageCreateInfo::default()
+                .image_type(vk::ImageType::TYPE_2D)
+                .format(DEPTH_FORMAT)
+                .extent(vk::Extent3D {
+                    width: resolution.width,
+                    height: resolution.height,
+                    depth: 1,
+                })
+                .mip_levels(1)
+                .array_layers(VIEW_COUNT)
+                .samples(vk::SampleCountFlags::TYPE_1)
+                .tiling(vk::ImageTiling::OPTIMAL)
+                .usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE),
+            None,
+        )?;
+
+        let mem_reqs = vk_device.get_image_memory_requirements(depth_image);
+        let mem_props = vk_instance.get_physical_device_memory_properties(vk_physical_device);
+        let mem_type_index = mem_props.memory_types[..mem_props.memory_type_count as usize]
+            .iter()
+            .enumerate()
+            .find(|(i, mt)| {
+                mem_reqs.memory_type_bits & (1 << i) != 0
+                    && mt.property_flags.contains(vk::MemoryPropertyFlags::DEVICE_LOCAL)
+            })
+            .context("No suitable memory type for depth image")?
+            .0 as u32;
+
+        let depth_image_memory = vk_device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(mem_reqs.size)
+                .memory_type_index(mem_type_index),
+            None,
+        )?;
+        vk_device.bind_image_memory(depth_image, depth_image_memory, 0)?;
+
+        let depth_view = vk_device.create_image_view(
+            &vk::ImageViewCreateInfo::default()
+                .image(depth_image)
+                .view_type(vk::ImageViewType::TYPE_2D_ARRAY)
+                .format(DEPTH_FORMAT)
+                .subresource_range(vk::ImageSubresourceRange {
+                    aspect_mask: vk::ImageAspectFlags::DEPTH,
+                    base_mip_level: 0,
+                    level_count: 1,
+                    base_array_layer: 0,
+                    layer_count: VIEW_COUNT,
+                }),
+            None,
+        )?;
+
+        (depth_image, depth_image_memory, depth_view)
+    };
+
+    // =========================================================================
+    // 17. DIAGRAM PIPELINE (UML boxes, edge ribbons, debug cube)
+    // =========================================================================
+    let diagram_vert_spv = read_spv(&mut Cursor::new(
+        &include_bytes!(concat!(env!("OUT_DIR"), "/diagram.vert.spv"))[..],
     ))?;
-    let frag_spv = read_spv(&mut Cursor::new(
-        &include_bytes!(concat!(env!("OUT_DIR"), "/solid.frag.spv"))[..],
+    let diagram_frag_spv = read_spv(&mut Cursor::new(
+        &include_bytes!(concat!(env!("OUT_DIR"), "/diagram.frag.spv"))[..],
     ))?;
 
-    let pipeline_layout;
-    let pipeline;
+    const PUSH_CONSTANT_SIZE: u32 = std::mem::size_of::<[Mat4; 2]>() as u32;
 
+    let diagram_pipeline_layout;
+    let diagram_pipeline;
+    let cube_buffer;
+    let cube_buffer_memory;
+    let diagram_buffer;
+    let diagram_buffer_memory;
+    let diagram_box_count: u32;
+    let diagram_ribbon_count: u32;
+
+    // SAFETY: Vulkan device is valid. Shader modules are created from SPIR-V compiled at
+    // build time. Buffer memory is HOST_VISIBLE|HOST_COHERENT so no flush needed.
+    // copy_nonoverlapping: src/dst don't overlap, dst is mapped with sufficient size.
+    // On early ? exit, prior allocations in this block may leak (acceptable for init code).
     unsafe {
-        let vert_module =
-            vk_device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&vert_spv), None)?;
-        let frag_module =
-            vk_device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&frag_spv), None)?;
+        let d_vert =
+            vk_device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&diagram_vert_spv), None)?;
+        let d_frag =
+            vk_device.create_shader_module(&vk::ShaderModuleCreateInfo::default().code(&diagram_frag_spv), None)?;
 
-        pipeline_layout = vk_device
-            .create_pipeline_layout(&vk::PipelineLayoutCreateInfo::default(), None)?;
+        diagram_pipeline_layout = vk_device.create_pipeline_layout(
+            &vk::PipelineLayoutCreateInfo::default().push_constant_ranges(&[
+                vk::PushConstantRange {
+                    stage_flags: vk::ShaderStageFlags::VERTEX,
+                    offset: 0,
+                    size: PUSH_CONSTANT_SIZE,
+                },
+            ]),
+            None,
+        )?;
 
         let noop_stencil = vk::StencilOpState {
             fail_op: vk::StencilOp::KEEP,
@@ -502,21 +776,45 @@ fn main() -> Result<()> {
             ..Default::default()
         };
 
-        pipeline = vk_device
+        let vertex_binding = [vk::VertexInputBindingDescription {
+            binding: 0,
+            stride: 24, // 3 f32 position + 3 f32 color
+            input_rate: vk::VertexInputRate::VERTEX,
+        }];
+        let vertex_attrs = [
+            vk::VertexInputAttributeDescription {
+                location: 0,
+                binding: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: 0,
+            },
+            vk::VertexInputAttributeDescription {
+                location: 1,
+                binding: 0,
+                format: vk::Format::R32G32B32_SFLOAT,
+                offset: 12,
+            },
+        ];
+
+        diagram_pipeline = vk_device
             .create_graphics_pipelines(
                 vk::PipelineCache::null(),
                 &[vk::GraphicsPipelineCreateInfo::default()
                     .stages(&[
                         vk::PipelineShaderStageCreateInfo::default()
                             .stage(vk::ShaderStageFlags::VERTEX)
-                            .module(vert_module)
+                            .module(d_vert)
                             .name(c"main"),
                         vk::PipelineShaderStageCreateInfo::default()
                             .stage(vk::ShaderStageFlags::FRAGMENT)
-                            .module(frag_module)
+                            .module(d_frag)
                             .name(c"main"),
                     ])
-                    .vertex_input_state(&vk::PipelineVertexInputStateCreateInfo::default())
+                    .vertex_input_state(
+                        &vk::PipelineVertexInputStateCreateInfo::default()
+                            .vertex_binding_descriptions(&vertex_binding)
+                            .vertex_attribute_descriptions(&vertex_attrs),
+                    )
                     .input_assembly_state(
                         &vk::PipelineInputAssemblyStateCreateInfo::default()
                             .topology(vk::PrimitiveTopology::TRIANGLE_LIST),
@@ -538,18 +836,16 @@ fn main() -> Result<()> {
                     )
                     .depth_stencil_state(
                         &vk::PipelineDepthStencilStateCreateInfo::default()
-                            .depth_test_enable(false)
-                            .depth_write_enable(false)
+                            .depth_test_enable(true)
+                            .depth_write_enable(true)
+                            .depth_compare_op(vk::CompareOp::LESS_OR_EQUAL)
                             .front(noop_stencil)
                             .back(noop_stencil),
                     )
                     .color_blend_state(
                         &vk::PipelineColorBlendStateCreateInfo::default()
                             .attachments(&[vk::PipelineColorBlendAttachmentState {
-                                blend_enable: vk::TRUE,
-                                src_color_blend_factor: vk::BlendFactor::ONE,
-                                dst_color_blend_factor: vk::BlendFactor::ZERO,
-                                color_blend_op: vk::BlendOp::ADD,
+                                blend_enable: vk::FALSE,
                                 color_write_mask: vk::ColorComponentFlags::RGBA,
                                 ..Default::default()
                             }]),
@@ -561,17 +857,122 @@ fn main() -> Result<()> {
                                 vk::DynamicState::SCISSOR,
                             ]),
                     )
-                    .layout(pipeline_layout)
+                    .layout(diagram_pipeline_layout)
                     .render_pass(render_pass)
                     .subpass(0)],
                 None,
             )
             .map_err(|(_pipelines, err)| err)?[0];
 
-        // Shader modules can be destroyed after pipeline creation.
-        vk_device.destroy_shader_module(vert_module, None);
-        vk_device.destroy_shader_module(frag_module, None);
+        vk_device.destroy_shader_module(d_vert, None);
+        vk_device.destroy_shader_module(d_frag, None);
+
+        // Cube at (0, 0, -2), half-size 0.1. 36 vertices (12 triangles), position + color per vertex.
+        let cube_vertices: [[f32; 6]; 36] = cube_vertices();
+        let cube_size = (cube_vertices.len() * 6 * 4) as u64; // 6 f32 per vertex, 4 bytes each
+
+        let cube_buf = vk_device.create_buffer(
+            &vk::BufferCreateInfo::default()
+                .size(cube_size)
+                .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE),
+            None,
+        )?;
+        let cube_mem_reqs = vk_device.get_buffer_memory_requirements(cube_buf);
+        let mem_props = vk_instance.get_physical_device_memory_properties(vk_physical_device);
+        let cube_mem_type = mem_props.memory_types[..mem_props.memory_type_count as usize]
+            .iter()
+            .enumerate()
+            .find(|(i, mt)| {
+                cube_mem_reqs.memory_type_bits & (1 << i) != 0
+                    && mt.property_flags
+                        .contains(vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)
+            })
+            .context("No HOST_VISIBLE memory for cube buffer")?
+            .0 as u32;
+        cube_buffer_memory = vk_device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(cube_mem_reqs.size)
+                .memory_type_index(cube_mem_type),
+            None,
+        )?;
+        vk_device.bind_buffer_memory(cube_buf, cube_buffer_memory, 0)?;
+        {
+            let ptr = vk_device.map_memory(
+                cube_buffer_memory,
+                0,
+                vk::WHOLE_SIZE,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            // SAFETY: map_memory returned a valid pointer for cube_mem_reqs.size bytes.
+            // cube_size <= cube_mem_reqs.size. Source (stack array) and dest (GPU mapped
+            // memory) do not overlap.
+            std::ptr::copy_nonoverlapping(
+                cube_vertices.as_ptr() as *const u8,
+                ptr as *mut u8,
+                cube_size as usize,
+            );
+            vk_device.unmap_memory(cube_buffer_memory);
+        }
+        cube_buffer = cube_buf;
+
+        // Diagram vertex buffer: boxes then edge ribbons (single buffer, two draw calls).
+        let (nodes, edges) = sample_diagram();
+        let (diagram_verts, box_count, ribbon_count) = build_diagram_vertices(&nodes, &edges);
+        diagram_box_count = box_count;
+        diagram_ribbon_count = ribbon_count;
+        let diagram_size = (diagram_verts.len() * 6 * 4) as u64;
+        let diagram_buf = vk_device.create_buffer(
+            &vk::BufferCreateInfo::default()
+                .size(diagram_size)
+                .usage(vk::BufferUsageFlags::VERTEX_BUFFER)
+                .sharing_mode(vk::SharingMode::EXCLUSIVE),
+            None,
+        )?;
+        let diagram_mem_reqs = vk_device.get_buffer_memory_requirements(diagram_buf);
+        let diagram_mem_type = mem_props.memory_types[..mem_props.memory_type_count as usize]
+            .iter()
+            .enumerate()
+            .find(|(i, mt)| {
+                diagram_mem_reqs.memory_type_bits & (1 << i) != 0
+                    && mt.property_flags
+                        .contains(vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT)
+            })
+            .context("No HOST_VISIBLE memory for diagram buffer")? 
+            .0 as u32;
+        diagram_buffer_memory = vk_device.allocate_memory(
+            &vk::MemoryAllocateInfo::default()
+                .allocation_size(diagram_mem_reqs.size)
+                .memory_type_index(diagram_mem_type),
+            None,
+        )?;
+        vk_device.bind_buffer_memory(diagram_buf, diagram_buffer_memory, 0)?;
+        {
+            let ptr = vk_device.map_memory(
+                diagram_buffer_memory,
+                0,
+                vk::WHOLE_SIZE,
+                vk::MemoryMapFlags::empty(),
+            )?;
+            // SAFETY: map_memory returned a valid pointer for diagram_mem_reqs.size bytes.
+            // diagram_size <= diagram_mem_reqs.size. Source (heap Vec) and dest (GPU mapped
+            // memory) do not overlap.
+            std::ptr::copy_nonoverlapping(
+                diagram_verts.as_ptr() as *const u8,
+                ptr as *mut u8,
+                diagram_size as usize,
+            );
+            vk_device.unmap_memory(diagram_buffer_memory);
+        }
+        diagram_buffer = diagram_buf;
     }
+
+    log::info!(
+        "Diagram pipeline created ({} box verts, {} ribbon verts, cube={})",
+        diagram_box_count,
+        diagram_ribbon_count,
+        if DEBUG_DRAW_CUBE { "enabled" } else { "disabled" },
+    );
 
     // =========================================================================
     // 18. COMMAND POOL + COMMAND BUFFERS
@@ -660,13 +1061,16 @@ fn main() -> Result<()> {
                                 .render_pass(render_pass)
                                 .width(resolution.width)
                                 .height(resolution.height)
-                                .attachments(&[color])
+                                .attachments(&[color, depth_view])
                                 .layers(1), // Multiview handles layers
                             None,
                         )
                         .unwrap()
                 };
-                Framebuffer { framebuffer, color }
+                Framebuffer {
+                    framebuffer,
+                    color,
+                }
             })
             .collect();
 
@@ -686,6 +1090,11 @@ fn main() -> Result<()> {
         r.store(false, Ordering::Relaxed);
     })
     .expect("Failed to set Ctrl+C handler");
+
+    // Debug cube: set NORTHCLOUD_DEBUG_CUBE=0 or false to disable (default: on).
+    let debug_draw_cube = env::var("NORTHCLOUD_DEBUG_CUBE")
+        .map(|v| v != "0" && v != "false")
+        .unwrap_or(DEBUG_DRAW_CUBE);
 
     // =========================================================================
     // 22. MAIN FRAME LOOP
@@ -795,13 +1204,35 @@ fn main() -> Result<()> {
         }
 
         // --- Locate head views (eye poses) ---
-        let (_, views) = session.locate_views(
+        let (view_flags, views) = session.locate_views(
             VIEW_TYPE,
             xr_frame_state.predicted_display_time,
             &stage,
         )?;
 
-        // Log head position (average of both eyes ≈ head center)
+        if !view_flags.contains(
+            xr::ViewStateFlags::ORIENTATION_VALID | xr::ViewStateFlags::POSITION_VALID,
+        ) {
+            log::warn!("Head tracking lost (flags: {:?}), submitting empty frame", view_flags);
+            frame_stream.end(
+                xr_frame_state.predicted_display_time,
+                environment_blend_mode,
+                &[],
+            )?;
+            continue;
+        }
+
+        // View-projection per eye (for diagram, debug cube, UI).
+        let view_proj: [Mat4; 2] = std::array::from_fn(|i| {
+            xr_math::view_proj_vulkan(
+                &views[i].pose,
+                &views[i].fov,
+                PROJECTION_NEAR,
+                PROJECTION_FAR,
+            )
+        });
+
+        // Log head position (left eye pose, approximately head center)
         let head_pos = views[0].pose.position;
         log::debug!(
             "Head: ({:.3}, {:.3}, {:.3})",
@@ -874,11 +1305,19 @@ fn main() -> Result<()> {
                         offset: vk::Offset2D::default(),
                         extent: swapchain.resolution,
                     })
-                    .clear_values(&[vk::ClearValue {
-                        color: vk::ClearColorValue {
-                            float32: [0.0, 0.0, 0.0, 1.0],
+                    .clear_values(&[
+                        vk::ClearValue {
+                            color: vk::ClearColorValue {
+                                float32: [0.0, 0.0, 0.0, 1.0],
+                            },
                         },
-                    }]),
+                        vk::ClearValue {
+                            depth_stencil: vk::ClearDepthStencilValue {
+                                depth: 1.0,
+                                stencil: 0,
+                            },
+                        },
+                    ]),
                 vk::SubpassContents::INLINE,
             );
 
@@ -904,10 +1343,33 @@ fn main() -> Result<()> {
                 }],
             );
 
-            vk_device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, pipeline);
-
-            // Draw fullscreen triangle (3 vertices, no vertex buffer).
-            vk_device.cmd_draw(cmd, 3, 1, 0, 0);
+            // Diagram pipeline: view-proj, then draw boxes and ribbons from single buffer.
+            vk_device.cmd_bind_pipeline(cmd, vk::PipelineBindPoint::GRAPHICS, diagram_pipeline);
+            let mut pc_data = [0f32; 32];
+            pc_data[0..16].copy_from_slice(&view_proj[0].to_cols_array());
+            pc_data[16..32].copy_from_slice(&view_proj[1].to_cols_array());
+            const _: () = assert!(
+                std::mem::size_of::<[f32; 32]>() == std::mem::size_of::<[Mat4; 2]>(),
+            );
+            // SAFETY: pc_data is a stack-allocated [f32; 32] (128 bytes = PUSH_CONSTANT_SIZE).
+            // Reinterpreting as &[u8] is valid: f32 has no padding, alignment of u8 is 1,
+            // and the slice lifetime is bounded by this scope.
+            let pc_bytes: &[u8] =
+                std::slice::from_raw_parts(pc_data.as_ptr() as *const u8, std::mem::size_of_val(&pc_data));
+            vk_device.cmd_push_constants(
+                cmd,
+                diagram_pipeline_layout,
+                vk::ShaderStageFlags::VERTEX,
+                0,
+                pc_bytes,
+            );
+            vk_device.cmd_bind_vertex_buffers(cmd, 0, &[diagram_buffer], &[0]);
+            vk_device.cmd_draw(cmd, diagram_box_count, 1, 0, 0);
+            vk_device.cmd_draw(cmd, diagram_ribbon_count, 1, diagram_box_count, 0);
+            if debug_draw_cube {
+                vk_device.cmd_bind_vertex_buffers(cmd, 0, &[cube_buffer], &[0]);
+                vk_device.cmd_draw(cmd, 36, 1, 0, 0);
+            }
 
             vk_device.cmd_end_render_pass(cmd);
             vk_device.end_command_buffer(cmd)?;
@@ -981,6 +1443,9 @@ fn main() -> Result<()> {
             vk_device.destroy_framebuffer(buf.framebuffer, None);
             vk_device.destroy_image_view(buf.color, None);
         }
+        vk_device.destroy_image_view(depth_view, None);
+        vk_device.destroy_image(depth_image, None);
+        vk_device.free_memory(depth_image_memory, None);
     }
 
     // Drop OpenXR handles in reverse creation order.
@@ -998,8 +1463,12 @@ fn main() -> Result<()> {
 
     // Destroy remaining Vulkan objects and the device/instance.
     unsafe {
-        vk_device.destroy_pipeline(pipeline, None);
-        vk_device.destroy_pipeline_layout(pipeline_layout, None);
+        vk_device.destroy_pipeline(diagram_pipeline, None);
+        vk_device.destroy_pipeline_layout(diagram_pipeline_layout, None);
+        vk_device.destroy_buffer(diagram_buffer, None);
+        vk_device.free_memory(diagram_buffer_memory, None);
+        vk_device.destroy_buffer(cube_buffer, None);
+        vk_device.free_memory(cube_buffer_memory, None);
         vk_device.destroy_render_pass(render_pass, None);
 
         vk_device.destroy_device(None);
