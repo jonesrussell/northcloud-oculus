@@ -17,6 +17,11 @@ tasks:
     cmds:
       - cargo run --release
 
+  publisher:
+    desc: Run dev Redis publisher (publishes random articles to channel "test" every 3s); use with task run in another terminal.
+    cmds:
+      - cargo run --release --bin redis_dev_publisher
+
   fetch-openxr:
     desc: Download openxr_loader.dll to target/release (run after clone or cargo clean)
     cmds:

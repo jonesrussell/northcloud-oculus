@@ -18,7 +18,7 @@ use bevy_mod_openxr::{add_xr_plugins, resources::OxrSessionConfig};
 use openxr::EnvironmentBlendMode;
 use std::path::Path;
 
-use redis_feed::{LiveFeedBuffer, RedisConnectionStatus, RedisFeedConfig, spawn_subscriber};
+use redis_feed::{LiveArticle, LiveFeedBuffer, RedisConnectionStatus, RedisFeedConfig, spawn_subscriber};
 use text_texture::{load_font, render_lines_to_rgba, render_text_to_rgba};
 
 // --- Marker components (cleanup, future interaction) ---
@@ -69,6 +69,13 @@ struct VrRedisStatusTextQuad;
 /// 3D quad showing live feed lines as rasterized text (visible in XR).
 #[derive(Component)]
 struct VrLiveFeedTextQuad;
+
+/// Message-bus animation: a card flying from path start toward the feed panel.
+#[derive(Component)]
+struct AnimatedMessageCard {
+    progress: f32,
+    duration: f32,
+}
 
 // --- Diagram model (same as prior Vulkan version) ---
 
@@ -144,6 +151,8 @@ fn main() -> AppExit {
             Update,
             (
                 drain_redis_feed,
+                spawn_animated_messages,
+                update_animated_messages,
                 update_feed_panel,
                 update_redis_status_panel,
                 update_vr_text_textures,
@@ -232,6 +241,97 @@ fn setup_diagram(
 
 fn drain_redis_feed(mut buffer: ResMut<LiveFeedBuffer>) {
     buffer.drain_receiver();
+}
+
+const ANIMATED_CARD_PATH_START: Vec3 = Vec3::new(0.3, 0.2, -1.9);
+const ANIMATED_CARD_PATH_END: Vec3 = Vec3::new(-0.5, 0.0, -1.95);
+const ANIMATED_CARD_DURATION: f32 = 1.5;
+const ANIMATED_CARD_TEXT_W: u32 = 256;
+const ANIMATED_CARD_TEXT_H: u32 = 48;
+const ANIMATED_CARD_TITLE_LEN: usize = 30;
+
+fn spawn_animated_messages(
+    mut commands: Commands,
+    vr_font: Option<Res<VrTextFont>>,
+    mut buffer: ResMut<LiveFeedBuffer>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
+) {
+    let Some(vr) = vr_font else {
+        return;
+    };
+    let Some(ref font) = vr.0 else {
+        return;
+    };
+    let articles: Vec<LiveArticle> = buffer.recently_received.drain(..).collect();
+    for article in articles {
+        let title = article
+            .title
+            .chars()
+            .take(ANIMATED_CARD_TITLE_LEN)
+            .collect::<String>();
+        let label = if article.title.len() > ANIMATED_CARD_TITLE_LEN {
+            format!("[{}] {}…", article.channel, title)
+        } else {
+            format!("[{}] {}", article.channel, title)
+        };
+        let data = render_text_to_rgba(
+            font,
+            &label,
+            ANIMATED_CARD_TEXT_W,
+            ANIMATED_CARD_TEXT_H,
+            18.0,
+            220,
+            220,
+            220,
+        );
+        let image = Image::new(
+            Extent3d {
+                width: ANIMATED_CARD_TEXT_W,
+                height: ANIMATED_CARD_TEXT_H,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            data,
+            TextureFormat::Rgba8UnormSrgb,
+            default(),
+        );
+        let image_handle = images.add(image);
+        let mat = materials.add(StandardMaterial {
+            base_color_texture: Some(image_handle),
+            alpha_mode: AlphaMode::Blend,
+            unlit: true,
+            ..default()
+        });
+        commands.spawn((
+            Mesh3d(meshes.add(Cuboid::new(0.2, 0.04, 0.002))),
+            MeshMaterial3d(mat),
+            Transform::from_translation(ANIMATED_CARD_PATH_START)
+                .with_rotation(Quat::from_rotation_y(std::f32::consts::FRAC_PI_2)),
+            AnimatedMessageCard {
+                progress: 0.0,
+                duration: ANIMATED_CARD_DURATION,
+            },
+        ));
+    }
+}
+
+fn update_animated_messages(
+    mut commands: Commands,
+    time: Res<Time>,
+    mut query: Query<(Entity, &mut AnimatedMessageCard, &mut Transform)>,
+) {
+    let dt = time.delta_secs();
+    for (entity, mut card, mut transform) in query.iter_mut() {
+        card.progress += dt / card.duration;
+        if card.progress >= 1.0 {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        let t = card.progress.min(1.0);
+        transform.translation = ANIMATED_CARD_PATH_START.lerp(ANIMATED_CARD_PATH_END, t);
+    }
 }
 
 fn update_feed_panel(

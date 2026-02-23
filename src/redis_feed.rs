@@ -120,12 +120,17 @@ pub enum FeedMessage {
 #[derive(Debug)]
 pub struct RedisReceiver(pub Mutex<mpsc::Receiver<FeedMessage>>);
 
+/// Max number of "just received" articles to hand to the VR animation system per drain.
+const RECENTLY_RECEIVED_CAP: usize = 8;
+
 #[derive(Debug, bevy::prelude::Resource)]
 pub struct LiveFeedBuffer {
     pub items: VecDeque<LiveArticle>,
     pub max_items: usize,
     pub connection_status: RedisConnectionStatus,
     pub receiver: Option<RedisReceiver>,
+    /// Articles received this drain; consumed by VR animation to spawn flying message cards.
+    pub recently_received: VecDeque<LiveArticle>,
 }
 
 impl LiveFeedBuffer {
@@ -135,6 +140,7 @@ impl LiveFeedBuffer {
             max_items: max_items.max(1),
             connection_status: RedisConnectionStatus::Connecting,
             receiver: Some(RedisReceiver(Mutex::new(receiver))),
+            recently_received: VecDeque::new(),
         }
     }
 
@@ -144,6 +150,7 @@ impl LiveFeedBuffer {
             max_items: max_items.max(1),
             connection_status: RedisConnectionStatus::Disabled,
             receiver: None,
+            recently_received: VecDeque::new(),
         }
     }
 
@@ -177,7 +184,13 @@ impl LiveFeedBuffer {
                         eprintln!("[redis_feed] Received Disconnected, status -> red");
                         self.connection_status = RedisConnectionStatus::Disconnected;
                     }
-                    FeedMessage::Article(a) => self.push(a),
+                    FeedMessage::Article(a) => {
+                        self.push(a.clone());
+                        self.recently_received.push_back(a);
+                        while self.recently_received.len() > RECENTLY_RECEIVED_CAP {
+                            self.recently_received.pop_front();
+                        }
+                    }
                 }
             }
         }

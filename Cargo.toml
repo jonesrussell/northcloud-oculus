@@ -3,10 +3,12 @@ name = "northcloud-oculus"
 version = "0.3.0"
 edition = "2021"
 rust-version = "1.77"
+default-run = "northcloud-oculus"
 
 [dependencies]
 ab_glyph = "0.2"
 bevy = "0.18"
+rand = "0.8"
 bevy_mod_xr = "0.5"
 bevy_mod_openxr = { version = "0.5", features = ["vulkan"] }
 openxr = "0.21"

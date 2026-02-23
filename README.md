@@ -54,6 +54,20 @@ The app **always** attempts a Redis connection so the status bar reflects real s
 
 Connection is retried a few times at startup if Redis is not ready. See [docs/PRODUCTION_REDIS.md](docs/PRODUCTION_REDIS.md) for connecting to production Redis via SSH tunnel.
 
+### Development: Simulating the message bus
+
+To test the live feed and **animated message cards in VR** without a real north-cloud backend, run a dev publisher that pushes random JSON to Redis:
+
+```bash
+# Terminal 1: start Redis (if not already running), then the VR app
+cargo run --release
+
+# Terminal 2: publish random articles to channel "test" every 3 seconds
+cargo run --bin redis_dev_publisher
+```
+
+With both running, the app (subscribing to `test` by default when `REDIS_CHANNELS` is unset) receives each message; new articles appear as **flying cards** that move from the right toward the feed panel, then disappear once they land. Dev publisher env: **REDIS_ADDR** (default `127.0.0.1:6379`), **REDIS_PASSWORD** (optional), **REDIS_CHANNEL** (default `test`), **PUBLISH_INTERVAL_SECS** (default `3`).
+
 ## How It Works
 
 - **Bevy + bevy_mod_openxr** — Bevy handles rendering (wgpu); bevy_mod_openxr provides the OpenXR session, swapchain, and XR camera/views. We spawn world-space entities (diagram nodes, edges, light, Redis status quad, optional debug cube).
@@ -81,8 +95,11 @@ northcloud-oculus/
 ├── Cargo.toml           — Bevy 0.18, bevy_mod_xr, bevy_mod_openxr, openxr, redis, serde
 ├── Cargo.lock           — Pinned dependency versions
 ├── src/
-│   ├── main.rs          — Bevy app: add_xr_plugins, setup_diagram, setup_feed_panel, setup_redis_status_panel
-│   └── redis_feed.rs    — Redis Pub/Sub subscriber, LiveFeedBuffer, connection status
+│   ├── main.rs          — Bevy app: diagram, feed panel, Redis status, VR text quads, animated message cards
+│   ├── redis_feed.rs    — Redis Pub/Sub subscriber, LiveFeedBuffer, recently_received for animation
+│   ├── text_texture.rs  — Rasterize text to RGBA for VR quads
+│   └── bin/
+│       └── redis_dev_publisher.rs — Dev: publishes random articles to Redis for testing
 ├── assets/
 │   └── fonts/           — FiraSans for feed/status text (desktop window)
 ├── Taskfile.yml        — task run, run:prod (with .env), fetch-openxr, tunnel
