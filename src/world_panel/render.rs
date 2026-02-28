@@ -135,6 +135,9 @@ pub fn spawn_world_panel(
 }
 
 /// Helper to spawn a WorldPanel facing a target position (e.g., the user)
+///
+/// Note: Bevy's Rectangle mesh faces +Z by default, but `looking_at` points -Z toward
+/// the target. We rotate 180° around Y so the textured front face is visible to the user.
 pub fn spawn_world_panel_facing(
     commands: &mut Commands,
     images: &mut Assets<Image>,
@@ -145,7 +148,8 @@ pub fn spawn_world_panel_facing(
     position: Vec3,
     look_at: Vec3,
 ) -> Entity {
-    let transform = Transform::from_translation(position).looking_at(look_at, Vec3::Y);
+    let mut transform = Transform::from_translation(position).looking_at(look_at, Vec3::Y);
+    transform.rotate_y(std::f32::consts::PI);
 
     spawn_world_panel(
         commands,

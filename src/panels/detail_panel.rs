@@ -50,7 +50,8 @@ pub fn spawn_detail_panel(
     look_at: Vec3,
 ) -> Entity {
     let position = node_position + config.offset;
-    let transform = Transform::from_translation(position).looking_at(look_at, Vec3::Y);
+    let mut transform = Transform::from_translation(position).looking_at(look_at, Vec3::Y);
+    transform.rotate_y(std::f32::consts::PI);
 
     let panel_entity = spawn_world_panel(
         commands,

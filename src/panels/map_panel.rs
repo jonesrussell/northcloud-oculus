@@ -93,7 +93,8 @@ pub fn spawn_map_panel(
     defaults: &WorldPanelDefaults,
     params: MapPanelParams,
 ) -> Entity {
-    let transform = Transform::from_translation(params.position).looking_at(params.look_at, Vec3::Y);
+    let mut transform = Transform::from_translation(params.position).looking_at(params.look_at, Vec3::Y);
+    transform.rotate_y(std::f32::consts::PI);
 
     let panel_entity = spawn_world_panel(
         commands,

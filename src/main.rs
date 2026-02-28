@@ -176,8 +176,12 @@ fn setup_demo_panel(
         &defaults,
         WorldPanelParams {
             size: Vec2::new(0.8, 0.6),
-            transform: Transform::from_xyz(-0.6, 1.2, -1.5)
-                .looking_at(Vec3::new(0.0, 1.2, 0.0), Vec3::Y),
+            transform: {
+                let mut t = Transform::from_xyz(-0.6, 1.2, -1.5)
+                    .looking_at(Vec3::new(0.0, 1.2, 0.0), Vec3::Y);
+                t.rotate_y(std::f32::consts::PI);
+                t
+            },
             ..default()
         },
     );
