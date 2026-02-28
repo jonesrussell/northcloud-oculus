@@ -61,6 +61,37 @@ impl NodeStatusBuffer {
     }
 }
 
+/// Health classification thresholds
+///
+/// Values at or below `critical` are Critical, values at or below `warning` are Warning,
+/// and values above `warning` are Healthy. Requires `warning > critical`.
+#[derive(Clone, Debug)]
+pub struct HealthThresholds {
+    pub warning: f64,
+    pub critical: f64,
+}
+
+impl Default for HealthThresholds {
+    fn default() -> Self {
+        Self {
+            warning: 0.5,
+            critical: 0.0,
+        }
+    }
+}
+
+impl HealthThresholds {
+    pub fn classify(&self, value: f64) -> NodeHealth {
+        if value <= self.critical {
+            NodeHealth::Critical
+        } else if value <= self.warning {
+            NodeHealth::Warning
+        } else {
+            NodeHealth::Healthy
+        }
+    }
+}
+
 /// Error type for data source operations
 #[derive(Debug, Clone)]
 pub enum DataError {

@@ -11,7 +11,7 @@ pub use grafana::*;
 pub use loki::*;
 
 use bevy::prelude::*;
-use bevy::tasks::{block_on, AsyncComputeTaskPool, Task};
+use bevy::tasks::{block_on, poll_once, AsyncComputeTaskPool, Task};
 
 use crate::node_marker::NodeMarker;
 
@@ -23,7 +23,7 @@ impl Plugin for DataIngestionPlugin {
         app.init_resource::<NodeStatusBuffer>()
             .init_resource::<DataIngestionConfig>()
             .init_resource::<DataIngestionState>()
-            .add_systems(Update, (poll_data_sources, apply_node_status_updates));
+            .add_systems(Update, (poll_data_sources, apply_node_status_updates).chain());
     }
 }
 
@@ -89,22 +89,25 @@ pub fn poll_data_sources(
 
         if let Some(config) = prometheus_config {
             let client = PrometheusClient::new(config);
-            if let Ok(nodes) = client.fetch_nodes().await {
-                all_nodes.extend(nodes);
+            match client.fetch_nodes().await {
+                Ok(nodes) => all_nodes.extend(nodes),
+                Err(e) => warn!("Prometheus fetch failed: {e}"),
             }
         }
 
         if let Some(config) = grafana_config {
             let client = GrafanaClient::new(config);
-            if let Ok(nodes) = client.fetch_nodes().await {
-                all_nodes.extend(nodes);
+            match client.fetch_nodes().await {
+                Ok(nodes) => all_nodes.extend(nodes),
+                Err(e) => warn!("Grafana fetch failed: {e}"),
             }
         }
 
         if let Some(config) = loki_config {
             let client = LokiClient::new(config);
-            if let Ok(nodes) = client.fetch_nodes().await {
-                all_nodes.extend(nodes);
+            match client.fetch_nodes().await {
+                Ok(nodes) => all_nodes.extend(nodes),
+                Err(e) => warn!("Loki fetch failed: {e}"),
             }
         }
 
@@ -128,8 +131,11 @@ pub fn apply_node_status_updates(
         return;
     }
 
-    let task = state.pending_task.take().unwrap();
-    let nodes = block_on(async { task.cancel().await.unwrap_or_default() });
+    let mut task = state.pending_task.take().unwrap();
+    let nodes = block_on(poll_once(&mut task)).unwrap_or_else(|| {
+        warn!("Data ingestion task returned no result despite being finished");
+        Vec::new()
+    });
 
     for node in nodes {
         if let Some(mut marker) = markers.iter_mut().find(|m| m.id == node.id) {
@@ -139,7 +145,7 @@ pub fn apply_node_status_updates(
     }
 }
 
-/// Helper to create a DataIngestionConfig with mock data for testing
+/// Builder methods for DataIngestionConfig
 impl DataIngestionConfig {
     pub fn with_prometheus(mut self, config: PrometheusConfig) -> Self {
         self.prometheus = Some(config);

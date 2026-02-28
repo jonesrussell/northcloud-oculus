@@ -7,12 +7,17 @@ use bevy_xr_utils::tracking_utils::XrTrackedRightGrip;
 
 use super::{PointerRay, PointerRayConfig};
 
+/// Details of a raycast intersection
+pub struct HitInfo {
+    pub entity: Entity,
+    pub point: Vec3,
+    pub distance: f32,
+}
+
 /// Resource storing the current raycast hit, if any
 #[derive(Resource, Default)]
 pub struct RaycastHit {
-    pub entity: Option<Entity>,
-    pub point: Option<Vec3>,
-    pub distance: Option<f32>,
+    pub hit: Option<HitInfo>,
 }
 
 /// Marker component for entities that can be raycast against
@@ -68,9 +73,11 @@ pub fn perform_raycast(
     }
 
     if let Some((entity, point, distance)) = closest_hit {
-        hit.entity = Some(entity);
-        hit.point = Some(point);
-        hit.distance = Some(distance);
+        hit.hit = Some(HitInfo {
+            entity,
+            point,
+            distance,
+        });
     }
 }
 
@@ -145,7 +152,7 @@ pub fn update_ray_appearance(
     };
 
     if let Some(material) = materials.get_mut(&ray_material.0) {
-        material.base_color = if hit.entity.is_some() {
+        material.base_color = if hit.hit.is_some() {
             config.hover_color
         } else {
             config.color

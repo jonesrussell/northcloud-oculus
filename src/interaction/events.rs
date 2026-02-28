@@ -84,7 +84,7 @@ pub fn update_hover_state(
 ) {
     hover_state.previous_hovered = hover_state.hovered_entity;
 
-    if let Some(entity) = hit.entity {
+    if let Some(entity) = hit.hit.as_ref().map(|h| h.entity) {
         if markers.contains(entity) {
             hover_state.hovered_entity = Some(entity);
 
@@ -128,28 +128,17 @@ pub fn update_selection(
     }
 }
 
-/// System to apply hover highlight to NodeMarkers
+/// System to apply hover highlight to NodeMarkers when Hovered is added
 pub fn apply_hover_highlight(
     marker_materials: Option<Res<NodeMarkerMaterials>>,
-    mut query: Query<
-        (&NodeMarker, &mut MeshMaterial3d<StandardMaterial>, Option<&Hovered>),
-        Changed<Hovered>,
-    >,
+    mut query: Query<&mut MeshMaterial3d<StandardMaterial>, Added<Hovered>>,
 ) {
     let Some(materials) = marker_materials else {
         return;
     };
 
-    for (marker, mut mat, hovered) in query.iter_mut() {
-        if hovered.is_some() {
-            mat.0 = materials.hover.clone();
-        } else {
-            mat.0 = match marker.health {
-                crate::node_marker::NodeHealth::Healthy => materials.healthy.clone(),
-                crate::node_marker::NodeHealth::Warning => materials.warning.clone(),
-                crate::node_marker::NodeHealth::Critical => materials.critical.clone(),
-            };
-        }
+    for mut mat in query.iter_mut() {
+        mat.0 = materials.hover.clone();
     }
 }
 

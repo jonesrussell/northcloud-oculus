@@ -28,7 +28,7 @@ impl Plugin for WorldPanelPlugin {
 pub struct WorldPanel {
     /// Panel size in meters (width, height)
     pub size: Vec2,
-    /// Texture resolution in pixels
+    /// Texture resolution in pixels (calculated from size * pixels_per_meter)
     pub resolution: UVec2,
     /// Entity of the associated UI camera that renders to this panel's texture
     pub ui_camera: Entity,
@@ -46,7 +46,7 @@ pub struct WorldPanelCamera {
 /// Configuration defaults for WorldPanel creation
 #[derive(Resource)]
 pub struct WorldPanelDefaults {
-    /// Pixels per meter for texture resolution calculation (default: 1024)
+    /// Pixels per meter for texture resolution calculation
     pub pixels_per_meter: u32,
     /// Background color for panels
     pub clear_color: Color,
@@ -61,11 +61,3 @@ impl Default for WorldPanelDefaults {
     }
 }
 
-/// Bundle for spawning a WorldPanel with all required components
-#[derive(Bundle)]
-pub struct WorldPanelBundle {
-    pub mesh: Mesh3d,
-    pub material: MeshMaterial3d<StandardMaterial>,
-    pub transform: Transform,
-    pub world_panel: WorldPanel,
-}

@@ -1,5 +1,6 @@
 //! Loki log query client
 
+use bevy::log::warn;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Instant;
@@ -16,7 +17,7 @@ pub struct LokiConfig {
     pub query: String,
     /// Label to use as node ID
     pub id_label: String,
-    /// Time range in seconds (default: 300 = 5 minutes)
+    /// Time range in seconds for the query window
     pub range_seconds: u64,
     /// Error log patterns that indicate critical state
     pub critical_patterns: Vec<String>,
@@ -68,7 +69,11 @@ impl LokiClient {
     pub fn new(config: LokiConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .expect("Failed to build HTTP client"),
         }
     }
 
@@ -119,7 +124,7 @@ impl DataSource for LokiClient {
     async fn fetch_nodes(&self) -> Result<Vec<NodeStatus>, DataError> {
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| DataError::ParseError(format!("System clock error: {e}")))?
             .as_nanos();
 
         let start = now - (self.config.range_seconds as u128 * 1_000_000_000);
@@ -141,7 +146,7 @@ impl DataSource for LokiClient {
 
         if !response.status().is_success() {
             return Err(DataError::NetworkError(format!(
-                "HTTP {}",
+                "Loki query failed: HTTP {}",
                 response.status()
             )));
         }
@@ -165,18 +170,27 @@ impl DataSource for LokiClient {
                 .stream
                 .get(&self.config.id_label)
                 .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
+                .unwrap_or_else(|| {
+                    warn!("Loki: missing '{}' label, using fallback ID", self.config.id_label);
+                    "unknown".to_string()
+                });
 
             let lat = stream
                 .stream
                 .get("lat")
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
+                .unwrap_or_else(|| {
+                    warn!("Loki node {id}: missing or invalid 'lat' label, defaulting to 0.0");
+                    0.0
+                });
             let lon = stream
                 .stream
                 .get("lon")
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
+                .unwrap_or_else(|| {
+                    warn!("Loki node {id}: missing or invalid 'lon' label, defaulting to 0.0");
+                    0.0
+                });
 
             let (health, metrics) = self.analyze_logs(&stream.values);
 

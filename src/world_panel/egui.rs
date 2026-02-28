@@ -9,46 +9,20 @@ use super::WorldPanel;
 #[derive(Component)]
 pub struct EguiPanel;
 
-/// Trait for drawing egui content to a WorldPanel
-pub trait WorldPanelUi {
-    fn draw_ui(&self, ctx: &egui::Context);
-}
-
-/// System parameter for accessing a WorldPanel's egui context
-pub struct WorldPanelEgui<'w, 's> {
-    egui_contexts: EguiContexts<'w, 's>,
-}
-
-impl<'w, 's> WorldPanelEgui<'w, 's> {
-    /// Get the egui context for a specific panel's UI camera
-    pub fn ctx_for_panel(&mut self, panel: &WorldPanel) -> Option<&mut egui::Context> {
-        self.egui_contexts.ctx_for_entity_mut(panel.ui_camera).ok()
-    }
-}
-
 /// Helper function to draw egui content to a WorldPanel
 pub fn draw_panel_ui(
     egui_contexts: &mut EguiContexts,
     panel: &WorldPanel,
     draw_fn: impl FnOnce(&egui::Context),
 ) {
-    if let Ok(ctx) = egui_contexts.ctx_for_entity_mut(panel.ui_camera) {
-        draw_fn(ctx);
-    }
-}
-
-/// Example system showing how to draw egui content to WorldPanels
-pub fn example_panel_ui_system(
-    mut egui_contexts: EguiContexts,
-    panels: Query<&WorldPanel, With<EguiPanel>>,
-) {
-    for panel in panels.iter() {
-        draw_panel_ui(&mut egui_contexts, panel, |ctx| {
-            egui::CentralPanel::default().show(ctx, |ui| {
-                ui.heading("World Panel");
-                ui.label("This is rendered to a texture in 3D space!");
-            });
-        });
+    match egui_contexts.ctx_for_entity_mut(panel.ui_camera) {
+        Ok(ctx) => draw_fn(ctx),
+        Err(e) => {
+            bevy::log::warn!(
+                "Failed to get egui context for panel camera {:?}: {e}",
+                panel.ui_camera
+            );
+        }
     }
 }
 

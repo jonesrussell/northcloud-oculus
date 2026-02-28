@@ -1,18 +1,18 @@
 //! Prometheus polling client
 
+use bevy::log::warn;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::node_marker::NodeHealth;
-
-use super::{DataError, DataSource, NodeStatus};
+use super::{DataError, DataSource, HealthThresholds, NodeStatus};
 
 /// Prometheus client configuration
 #[derive(Clone)]
 pub struct PrometheusConfig {
     pub base_url: String,
-    /// PromQL query that returns node status with labels: instance, lat, lon
+    /// PromQL query to execute. Result labels are used to extract node ID (via id_label),
+    /// and optionally latitude/longitude (via lat_label, lon_label).
     pub query: String,
     /// Label to use as node ID (default: "instance")
     pub id_label: String,
@@ -20,10 +20,8 @@ pub struct PrometheusConfig {
     pub lat_label: Option<String>,
     /// Label containing longitude (optional)
     pub lon_label: Option<String>,
-    /// Threshold for warning state (default: 0.5)
-    pub warning_threshold: f64,
-    /// Threshold for critical state (default: 0.0)
-    pub critical_threshold: f64,
+    /// Health classification thresholds
+    pub thresholds: HealthThresholds,
 }
 
 impl Default for PrometheusConfig {
@@ -34,8 +32,7 @@ impl Default for PrometheusConfig {
             id_label: "instance".to_string(),
             lat_label: None,
             lon_label: None,
-            warning_threshold: 0.5,
-            critical_threshold: 0.0,
+            thresholds: HealthThresholds::default(),
         }
     }
 }
@@ -71,17 +68,11 @@ impl PrometheusClient {
     pub fn new(config: PrometheusConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
-        }
-    }
-
-    fn parse_health(&self, value: f64) -> NodeHealth {
-        if value <= self.config.critical_threshold {
-            NodeHealth::Critical
-        } else if value <= self.config.warning_threshold {
-            NodeHealth::Warning
-        } else {
-            NodeHealth::Healthy
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .expect("Failed to build HTTP client"),
         }
     }
 }
@@ -104,7 +95,7 @@ impl DataSource for PrometheusClient {
 
         if !response.status().is_success() {
             return Err(DataError::NetworkError(format!(
-                "HTTP {}",
+                "Prometheus query failed: HTTP {}",
                 response.status()
             )));
         }
@@ -128,7 +119,10 @@ impl DataSource for PrometheusClient {
                 .metric
                 .get(&self.config.id_label)
                 .cloned()
-                .unwrap_or_else(|| "unknown".to_string());
+                .unwrap_or_else(|| {
+                    warn!("Prometheus: missing '{}' label, using fallback ID", self.config.id_label);
+                    "unknown".to_string()
+                });
 
             let lat = self
                 .config
@@ -136,7 +130,12 @@ impl DataSource for PrometheusClient {
                 .as_ref()
                 .and_then(|l| result.metric.get(l))
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
+                .unwrap_or_else(|| {
+                    if self.config.lat_label.is_some() {
+                        warn!("Prometheus node {id}: missing or invalid lat label, defaulting to 0.0");
+                    }
+                    0.0
+                });
 
             let lon = self
                 .config
@@ -144,7 +143,12 @@ impl DataSource for PrometheusClient {
                 .as_ref()
                 .and_then(|l| result.metric.get(l))
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(0.0);
+                .unwrap_or_else(|| {
+                    if self.config.lon_label.is_some() {
+                        warn!("Prometheus node {id}: missing or invalid lon label, defaulting to 0.0");
+                    }
+                    0.0
+                });
 
             let value: f64 = result
                 .value
@@ -152,7 +156,7 @@ impl DataSource for PrometheusClient {
                 .parse()
                 .map_err(|_| DataError::ParseError("Invalid metric value".to_string()))?;
 
-            let health = self.parse_health(value);
+            let health = self.config.thresholds.classify(value);
 
             let mut status = NodeStatus {
                 id,

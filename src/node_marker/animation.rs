@@ -54,6 +54,9 @@ pub fn animate_warning_pulse(
         }
 
         pulse.phase += time.delta_secs() * pulse.speed;
+        if pulse.phase > std::f32::consts::TAU {
+            pulse.phase -= std::f32::consts::TAU;
+        }
         let t = (pulse.phase.sin() + 1.0) * 0.5;
         let scale = pulse.min_scale + t * (pulse.max_scale - pulse.min_scale);
 

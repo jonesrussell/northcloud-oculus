@@ -1,12 +1,11 @@
 //! Grafana API client
 
+use bevy::log::warn;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use crate::node_marker::NodeHealth;
-
-use super::{DataError, DataSource, NodeStatus};
+use super::{DataError, DataSource, HealthThresholds, NodeStatus};
 
 /// Grafana client configuration
 #[derive(Clone)]
@@ -18,9 +17,8 @@ pub struct GrafanaConfig {
     pub query: String,
     /// Label to use as node ID
     pub id_label: String,
-    /// Health thresholds
-    pub warning_threshold: f64,
-    pub critical_threshold: f64,
+    /// Health classification thresholds
+    pub thresholds: HealthThresholds,
 }
 
 impl Default for GrafanaConfig {
@@ -31,8 +29,7 @@ impl Default for GrafanaConfig {
             datasource_uid: "prometheus".to_string(),
             query: "up".to_string(),
             id_label: "instance".to_string(),
-            warning_threshold: 0.5,
-            critical_threshold: 0.0,
+            thresholds: HealthThresholds::default(),
         }
     }
 }
@@ -80,17 +77,11 @@ impl GrafanaClient {
     pub fn new(config: GrafanaConfig) -> Self {
         Self {
             config,
-            client: reqwest::Client::new(),
-        }
-    }
-
-    fn parse_health(&self, value: f64) -> NodeHealth {
-        if value <= self.config.critical_threshold {
-            NodeHealth::Critical
-        } else if value <= self.config.warning_threshold {
-            NodeHealth::Warning
-        } else {
-            NodeHealth::Healthy
+            client: reqwest::Client::builder()
+                .connect_timeout(std::time::Duration::from_secs(5))
+                .timeout(std::time::Duration::from_secs(15))
+                .build()
+                .expect("Failed to build HTTP client"),
         }
     }
 }
@@ -102,7 +93,7 @@ impl DataSource for GrafanaClient {
 
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| DataError::ParseError(format!("System clock error: {e}")))?
             .as_millis() as i64;
 
         let body = serde_json::json!({
@@ -129,13 +120,18 @@ impl DataSource for GrafanaClient {
             .await
             .map_err(|e| DataError::NetworkError(e.to_string()))?;
 
-        if response.status() == reqwest::StatusCode::UNAUTHORIZED {
-            return Err(DataError::AuthError("Invalid API key".to_string()));
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            || response.status() == reqwest::StatusCode::FORBIDDEN
+        {
+            return Err(DataError::AuthError(format!(
+                "Grafana authentication failed (HTTP {})",
+                response.status().as_u16()
+            )));
         }
 
         if !response.status().is_success() {
             return Err(DataError::NetworkError(format!(
-                "HTTP {}",
+                "Grafana query failed: HTTP {}",
                 response.status()
             )));
         }
@@ -147,47 +143,62 @@ impl DataSource for GrafanaClient {
 
         let mut nodes = Vec::new();
 
-        if let Some(result) = body.results.get("A") {
-            for frame in &result.frames {
-                for (i, field) in frame.schema.fields.iter().enumerate() {
-                    if field.name == "Value" {
-                        if let Some(labels) = &field.labels {
-                            let id = labels
-                                .get(&self.config.id_label)
-                                .cloned()
-                                .unwrap_or_else(|| format!("node-{}", i));
+        let result = body.results.get("A").ok_or_else(|| {
+            DataError::ParseError("Grafana response missing expected result 'A'".to_string())
+        })?;
 
-                            let lat = labels
-                                .get("lat")
-                                .and_then(|v| v.parse().ok())
-                                .unwrap_or(0.0);
-                            let lon = labels
-                                .get("lon")
-                                .and_then(|v| v.parse().ok())
-                                .unwrap_or(0.0);
+        for frame in &result.frames {
+            for (i, field) in frame.schema.fields.iter().enumerate() {
+                if field.name == "Value" {
+                    if let Some(labels) = &field.labels {
+                        let id = labels
+                            .get(&self.config.id_label)
+                            .cloned()
+                            .unwrap_or_else(|| {
+                                warn!("Grafana: missing '{}' label, using fallback ID", self.config.id_label);
+                                format!("node-{}", i)
+                            });
 
-                            let value = frame
-                                .data
-                                .values
-                                .get(i)
-                                .and_then(|vals| vals.last())
-                                .and_then(|v| v.as_f64())
-                                .unwrap_or(0.0);
+                        let lat = labels
+                            .get("lat")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or_else(|| {
+                                warn!("Grafana node {id}: missing or invalid 'lat' label, defaulting to 0.0");
+                                0.0
+                            });
+                        let lon = labels
+                            .get("lon")
+                            .and_then(|v| v.parse().ok())
+                            .unwrap_or_else(|| {
+                                warn!("Grafana node {id}: missing or invalid 'lon' label, defaulting to 0.0");
+                                0.0
+                            });
 
-                            let health = self.parse_health(value);
+                        let value = frame
+                            .data
+                            .values
+                            .get(i)
+                            .and_then(|vals| vals.last())
+                            .and_then(|v| v.as_f64());
 
-                            let mut status = NodeStatus {
-                                id,
-                                lat,
-                                lon,
-                                health,
-                                metrics: HashMap::new(),
-                                last_updated: Instant::now(),
-                            };
+                        let Some(value) = value else {
+                            warn!("Grafana node {id}: no valid metric value, skipping");
+                            continue;
+                        };
 
-                            status.metrics.insert("value".to_string(), value);
-                            nodes.push(status);
-                        }
+                        let health = self.config.thresholds.classify(value);
+
+                        let mut status = NodeStatus {
+                            id,
+                            lat,
+                            lon,
+                            health,
+                            metrics: HashMap::new(),
+                            last_updated: Instant::now(),
+                        };
+
+                        status.metrics.insert("value".to_string(), value);
+                        nodes.push(status);
                     }
                 }
             }

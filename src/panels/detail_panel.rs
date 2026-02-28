@@ -81,7 +81,8 @@ pub fn spawn_detail_panel(
     panel_entity
 }
 
-/// System to spawn DetailPanel when a node is selected
+/// System that manages DetailPanel lifecycle: despawns panels for deselected
+/// nodes and spawns new ones for the current selection.
 pub fn spawn_detail_on_selection(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,
@@ -91,14 +92,15 @@ pub fn spawn_detail_on_selection(
     config: Res<DetailPanelConfig>,
     selection: Res<SelectionState>,
     markers: Query<(&Transform, &NodeMarker)>,
-    existing_panels: Query<(Entity, &DetailPanel)>,
+    existing_panels: Query<(Entity, &DetailPanel, &WorldPanel)>,
 ) {
     if !selection.is_changed() {
         return;
     }
 
-    for (panel_entity, detail) in existing_panels.iter() {
+    for (panel_entity, detail, world_panel) in existing_panels.iter() {
         if Some(detail.node_entity) != selection.selected_entity {
+            commands.entity(world_panel.ui_camera).despawn();
             commands.entity(panel_entity).despawn();
         }
     }
@@ -106,7 +108,7 @@ pub fn spawn_detail_on_selection(
     if let Some(selected) = selection.selected_entity {
         let already_has_panel = existing_panels
             .iter()
-            .any(|(_, d)| d.node_entity == selected);
+            .any(|(_, d, _)| d.node_entity == selected);
 
         if !already_has_panel {
             if let Ok((transform, marker)) = markers.get(selected) {
