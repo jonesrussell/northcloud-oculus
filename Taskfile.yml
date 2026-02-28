@@ -17,8 +17,19 @@ tasks:
     cmds:
       - cargo run --release
 
+  redis:
+    desc: Start Redis in Podman on 127.0.0.1:6379 (for local dev). Stop with task redis:stop
+    cmds:
+      - podman start northcloud-redis 2>nul || podman run -d --name northcloud-redis -p 6379:6379 docker.io/library/redis:7-alpine
+
+  redis:stop:
+    desc: Stop and remove the local Redis container
+    ignore_error: true
+    cmds:
+      - podman rm -f northcloud-redis
+
   publisher:
-    desc: Run dev Redis publisher (publishes random articles to channel "test" every 3s); use with task run in another terminal.
+    desc: Run dev Redis publisher (publishes random articles to channel "test" every 3s); use with task run in another terminal. Requires task redis first.
     cmds:
       - cargo run --release --bin redis_dev_publisher
 
