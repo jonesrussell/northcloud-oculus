@@ -1,6 +1,7 @@
 //! Interaction events and hover/selection systems
 
 use bevy::prelude::*;
+use bevy_xr_utils::actions::{ActionStateFloat, XRUtilsActionState};
 
 use crate::node_marker::{NodeMarker, NodeMarkerMaterials};
 
@@ -27,11 +28,51 @@ pub struct SelectionState {
     pub selected_entity: Option<Entity>,
 }
 
+/// Marker component for the right trigger action entity
+#[derive(Component)]
+pub struct RightTriggerAction;
+
 /// Trigger input state (from VR controller)
-#[derive(Resource, Default)]
+#[derive(Resource)]
 pub struct TriggerInput {
     pub right_trigger_pressed: bool,
     pub right_trigger_just_pressed: bool,
+    previous_pressed: bool,
+}
+
+impl Default for TriggerInput {
+    fn default() -> Self {
+        Self {
+            right_trigger_pressed: false,
+            right_trigger_just_pressed: false,
+            previous_pressed: false,
+        }
+    }
+}
+
+/// System to read VR controller trigger input and update TriggerInput resource
+pub fn update_trigger_input(
+    mut trigger_input: ResMut<TriggerInput>,
+    action_query: Query<&XRUtilsActionState, With<RightTriggerAction>>,
+) {
+    const TRIGGER_THRESHOLD: f32 = 0.5;
+
+    let mut current_pressed = false;
+
+    for state in action_query.iter() {
+        if let XRUtilsActionState::Float(ActionStateFloat {
+            current_state, ..
+        }) = state
+        {
+            current_pressed = *current_state > TRIGGER_THRESHOLD;
+            break;
+        }
+    }
+
+    trigger_input.right_trigger_just_pressed =
+        current_pressed && !trigger_input.previous_pressed;
+    trigger_input.right_trigger_pressed = current_pressed;
+    trigger_input.previous_pressed = current_pressed;
 }
 
 /// System to update hover state based on raycast hits

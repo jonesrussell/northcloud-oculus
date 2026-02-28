@@ -74,7 +74,8 @@ pub fn perform_raycast(
     }
 }
 
-/// Simple ray-AABB intersection test
+/// Simple ray-AABB intersection test using the slab method.
+/// Handles rays parallel to slab planes by checking if the origin is within the slab.
 fn ray_aabb_intersection(
     ray_origin: Vec3,
     ray_dir: Vec3,
@@ -84,23 +85,41 @@ fn ray_aabb_intersection(
     let min = aabb_center - half_extents;
     let max = aabb_center + half_extents;
 
-    let inv_dir = Vec3::new(
-        if ray_dir.x.abs() > 1e-6 { 1.0 / ray_dir.x } else { f32::MAX },
-        if ray_dir.y.abs() > 1e-6 { 1.0 / ray_dir.y } else { f32::MAX },
-        if ray_dir.z.abs() > 1e-6 { 1.0 / ray_dir.z } else { f32::MAX },
-    );
+    let mut tmin = f32::NEG_INFINITY;
+    let mut tmax = f32::INFINITY;
 
-    let t1 = (min.x - ray_origin.x) * inv_dir.x;
-    let t2 = (max.x - ray_origin.x) * inv_dir.x;
-    let t3 = (min.y - ray_origin.y) * inv_dir.y;
-    let t4 = (max.y - ray_origin.y) * inv_dir.y;
-    let t5 = (min.z - ray_origin.z) * inv_dir.z;
-    let t6 = (max.z - ray_origin.z) * inv_dir.z;
+    let dirs = [ray_dir.x, ray_dir.y, ray_dir.z];
+    let origins = [ray_origin.x, ray_origin.y, ray_origin.z];
+    let mins = [min.x, min.y, min.z];
+    let maxs = [max.x, max.y, max.z];
 
-    let tmin = t1.min(t2).max(t3.min(t4)).max(t5.min(t6));
-    let tmax = t1.max(t2).min(t3.max(t4)).min(t5.max(t6));
+    for i in 0..3 {
+        if dirs[i].abs() < 1e-6 {
+            // Ray is parallel to this slab. Check if origin is within the slab.
+            if origins[i] < mins[i] || origins[i] > maxs[i] {
+                return None;
+            }
+            // Origin is within slab; this axis doesn't constrain t.
+        } else {
+            let inv_d = 1.0 / dirs[i];
+            let mut t1 = (mins[i] - origins[i]) * inv_d;
+            let mut t2 = (maxs[i] - origins[i]) * inv_d;
 
-    if tmax < 0.0 || tmin > tmax {
+            if t1 > t2 {
+                std::mem::swap(&mut t1, &mut t2);
+            }
+
+            tmin = tmin.max(t1);
+            tmax = tmax.min(t2);
+
+            if tmin > tmax {
+                return None;
+            }
+        }
+    }
+
+    // tmax < 0 means the AABB is entirely behind the ray origin
+    if tmax < 0.0 {
         return None;
     }
 
