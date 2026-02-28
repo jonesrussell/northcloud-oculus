@@ -91,7 +91,11 @@ fn main() -> AppExit {
             ..default()
         })
         .insert_resource(ClearColor(Color::BLACK))
-        .add_systems(Startup, (setup_diagram, setup_demo_panel, setup_demo_markers))
+        .add_systems(Startup, (setup_diagram, setup_demo_panel))
+        .add_systems(
+            Startup,
+            setup_demo_markers.after(northcloud_oculus::node_marker::setup_node_marker_materials),
+        )
         .add_systems(Update, demo_panel_ui)
         .run()
 }
