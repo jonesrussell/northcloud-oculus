@@ -2,7 +2,7 @@
 
 UML diagram VR viewer targeting the Oculus Rift CV1 and Meta Quest 3 (via Quest Link). Built with **Bevy 0.18** and **bevy_mod_openxr**.
 
-Renders a static diagram (class boxes + edges) in VR. Optional debug cube at (0, 0, -2); set `NORTHCLOUD_DEBUG_CUBE=0` or `false` to disable.
+Renders a static diagram (class boxes + edges) in VR. **Redis status panel** (3D quad above the diagram) shows connection state in the headset: red = disconnected, yellow = connecting, green = connected. The app always tries to connect to Redis at `127.0.0.1:6379` (or `REDIS_ADDR`); if `REDIS_CHANNELS` is unset it subscribes to channel `test` so the bar reflects real connection state. Optional **live feed** of articles when `REDIS_CHANNELS` is set to your channels. Optional debug cube at (0, 0, -2); set `NORTHCLOUD_DEBUG_CUBE=0` or `false` to disable.
 
 ## Prerequisites
 
@@ -35,17 +35,45 @@ cargo build --release
 cargo run --release
 ```
 
-Use `--release` for VR performance (debug builds are too slow in-headset).
+Or use [Task](https://taskfile.dev): `task` (default) or `task run` to run; `task run:prod` to run with `REDIS_*` from `.env`. Use `--release` for VR performance (debug builds are too slow in-headset).
 
 ## What You Should See
 
-- **In headset:** UML diagram (three colored boxes and two gray edges) in 3D; optional green debug cube at (0, 0, -2).
+- **In headset:** UML diagram (three colored boxes and two gray edges) in 3D; a **Redis status bar** (flat quad above the diagram) showing red when disconnected/disabled, yellow when connecting, green when connected; optional green debug cube at (0, 0, -2).
+- **On desktop window:** If Redis is configured, live feed text and "Redis: …" status text appear on the window (2D text does not render in the XR view).
 - **Exit:** Close the window, Ctrl+C in terminal, or remove headset.
+
+## Redis connection and live feed
+
+The app **always** attempts a Redis connection so the status bar reflects real state (green when Redis is reachable). If Redis is not running, the bar stays red; start Redis locally (e.g. `redis-server` or Choco `redis`) to see green.
+
+- **REDIS_CHANNELS** — Comma-separated channel names for the live article feed (e.g. `articles:crime,articles:mining`). If **unset**, the app subscribes to channel `test` so the bar still shows connection state; no article feed until you set real channels.
+- **REDIS_ADDR** — Default `127.0.0.1:6379`.
+- **REDIS_PASSWORD** — Optional; required for production Redis.
+- **REDIS_MAX_ITEMS** — Default 20 (max articles in the feed).
+
+Connection is retried a few times at startup if Redis is not ready. See [docs/PRODUCTION_REDIS.md](docs/PRODUCTION_REDIS.md) for connecting to production Redis via SSH tunnel.
+
+### Development: Simulating the message bus
+
+To test the live feed and **animated message cards in VR** without a real north-cloud backend, run a dev publisher that pushes random JSON to Redis:
+
+```bash
+# Terminal 1: start Redis (if not already running), then the VR app
+cargo run --release
+
+# Terminal 2: publish random articles to channel "test" every 3 seconds
+cargo run --bin redis_dev_publisher
+```
+
+With both running, the app (subscribing to `test` by default when `REDIS_CHANNELS` is unset) receives each message; new articles appear as **flying cards** that move from the right toward the feed panel, then disappear once they land. Dev publisher env: **REDIS_ADDR** (default `127.0.0.1:6379`), **REDIS_PASSWORD** (optional), **REDIS_CHANNEL** (default `test`), **PUBLISH_INTERVAL_SECS** (default `3`).
 
 ## How It Works
 
-- **Bevy + bevy_mod_openxr** — Bevy handles rendering (wgpu); bevy_mod_openxr provides the OpenXR session, swapchain, and XR camera/views. We only spawn world-space entities (diagram nodes, edges, light).
+- **Bevy + bevy_mod_openxr** — Bevy handles rendering (wgpu); bevy_mod_openxr provides the OpenXR session, swapchain, and XR camera/views. We spawn world-space entities (diagram nodes, edges, light, Redis status quad, optional debug cube).
 - **Diagram** — One Startup system spawns nodes as quads, edges as thin cuboids, and an optional debug cube. Marker components (`DiagramNode`, `DiagramEdge`, `DebugCube`) identify diagram entities for future interaction.
+- **Redis status panel** — A 3D quad above the diagram shows connection state by color (red / yellow / green). Bevy’s `Text2d` is not rendered into the XR view, so the status is conveyed with the colored quad; the same status text is shown on the desktop window when present.
+- **Live feed** — `redis_feed` module always subscribes to Redis (default channel `test` if `REDIS_CHANNELS` unset); connection is retried on failure. Received articles are shown as text on the desktop window; status bar shows connecting / connected / disconnected.
 
 The Rift CV1's Constellation tracking and the Quest 3's inside-out tracking are fully abstracted by OpenXR; no code changes needed between headsets.
 
@@ -64,13 +92,21 @@ The Rift CV1's Constellation tracking and the Quest 3's inside-out tracking are 
 
 ```
 northcloud-oculus/
-├── Cargo.toml           — Bevy 0.18, bevy_mod_xr, bevy_mod_openxr, openxr
+├── Cargo.toml           — Bevy 0.18, bevy_mod_xr, bevy_mod_openxr, openxr, redis, serde
 ├── Cargo.lock           — Pinned dependency versions
 ├── src/
-│   └── main.rs          — Bevy app: add_xr_plugins, setup_diagram (nodes, edges, cube, light)
+│   ├── main.rs          — Bevy app: diagram, feed panel, Redis status, VR text quads, animated message cards
+│   ├── redis_feed.rs    — Redis Pub/Sub subscriber, LiveFeedBuffer, recently_received for animation
+│   ├── text_texture.rs  — Rasterize text to RGBA for VR quads
+│   └── bin/
+│       └── redis_dev_publisher.rs — Dev: publishes random articles to Redis for testing
+├── assets/
+│   └── fonts/           — FiraSans for feed/status text (desktop window)
+├── Taskfile.yml        — task run, run:prod (with .env), fetch-openxr, tunnel
 ├── scripts/
 │   └── fetch-openxr-loader.ps1 — Downloads openxr_loader.dll into target\release\
 ├── docs/
+│   ├── PRODUCTION_REDIS.md — SSH tunnel + env for production Redis
 │   └── plans/           — Design documents
 └── .gitignore
 ```
@@ -83,3 +119,5 @@ northcloud-oculus/
 | [bevy_mod_xr](https://crates.io/crates/bevy_mod_xr) | 0.5 | XR API for Bevy |
 | [bevy_mod_openxr](https://crates.io/crates/bevy_mod_openxr) | 0.5 | OpenXR backend for bevy_mod_xr |
 | [openxr](https://crates.io/crates/openxr) | 0.21 | OpenXR bindings |
+| [redis](https://crates.io/crates/redis) | 0.27 | Redis Pub/Sub for live feed |
+| [serde](https://crates.io/crates/serde) / serde_json | 1.0 | JSON parsing of feed messages |

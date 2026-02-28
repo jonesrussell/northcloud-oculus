@@ -1,0 +1,57 @@
+# https://taskfile.dev — run with: task <name>
+version: "3"
+
+tasks:
+  default:
+    desc: Run VR app (release)
+    cmds:
+      - task: run
+
+  build:
+    desc: Release build
+    cmds:
+      - cargo build --release
+
+  run:
+    desc: Run VR app (release); needs Oculus runtime + openxr_loader.dll. Tries Redis at 127.0.0.1:6379 (channel "test" if REDIS_CHANNELS unset); status bar shows green when connected.
+    cmds:
+      - cargo run --release
+
+  redis:
+    desc: Start Redis in Podman on 127.0.0.1:6379 (for local dev). Stop with task redis:stop
+    cmds:
+      - podman start northcloud-redis 2>nul || podman run -d --name northcloud-redis -p 6379:6379 docker.io/library/redis:7-alpine
+
+  redis:stop:
+    desc: Stop and remove the local Redis container
+    ignore_error: true
+    cmds:
+      - podman rm -f northcloud-redis
+
+  publisher:
+    desc: Run dev Redis publisher (publishes random articles to channel "test" every 3s); use with task run in another terminal. Requires task redis first.
+    cmds:
+      - cargo run --release --bin redis_dev_publisher
+
+  fetch-openxr:
+    desc: Download openxr_loader.dll to target/release (run after clone or cargo clean)
+    cmds:
+      - pwsh -NoProfile -File scripts/fetch-openxr-loader.ps1
+
+  tunnel:
+    desc: SSH tunnel to production Redis (leave this terminal open)
+    cmds:
+      - pwsh -NoProfile -File scripts/tunnel-production-redis.ps1
+
+  run:prod:
+    desc: Run VR app with REDIS_* from .env (start tunnel in another terminal first)
+    dotenv:
+      - .env
+    cmds:
+      - cargo run --release
+
+  openxr:
+    desc: Fetch OpenXR loader then run
+    cmds:
+      - task: fetch-openxr
+      - task: run
