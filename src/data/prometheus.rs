@@ -1,4 +1,5 @@
-//! Prometheus polling client
+//! Prometheus polling client (legacy — queries now routed through GrafanaClient)
+#![allow(dead_code)]
 
 use bevy::log::warn;
 use serde::Deserialize;

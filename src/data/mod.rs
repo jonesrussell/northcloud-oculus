@@ -6,9 +6,9 @@ mod grafana;
 mod loki;
 
 pub use node_status::*;
-pub use prometheus::*;
 pub use grafana::*;
-pub use loki::*;
+// prometheus and loki modules retained but not re-exported
+// (all queries now route through GrafanaClient)
 
 use bevy::prelude::*;
 use bevy::tasks::{block_on, poll_once, AsyncComputeTaskPool, Task};
