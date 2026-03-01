@@ -23,4 +23,4 @@ serde_json = "1.0"
 async-trait = "0.1"
 urlencoding = "2.1"
 dotenvy = "0.15.7"
-tokio = { version = "1.49.0", features = ["rt"] }
+tokio = { version = "1.49.0", features = ["rt", "net", "time", "macros"] }

@@ -18,7 +18,6 @@ pub struct PanelsPlugin;
 impl Plugin for PanelsPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<DetailPanelConfig>()
-            .init_resource::<FrontierStats>()
             .add_systems(Update, (
                 spawn_detail_on_selection,
                 render_detail_panel_ui,

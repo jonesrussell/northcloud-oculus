@@ -1,33 +1,18 @@
 //! FrontierPanel - Displays frontier queue stats from Grafana/Loki
 //!
 //! Shows key metrics from the north-cloud crawler's frontier operations:
-//! - Submit/Fetch events
 //! - Queue depth (pending/fetching)
-//! - Failure counts
+//! - Activity (submitted, queued, fetched, failed)
+//! - Blocked URLs (robots.txt, dead)
 
 use bevy::prelude::*;
 use bevy_egui::egui;
-use std::time::Instant;
 
+use crate::data::FrontierStats;
 use crate::world_panel::{
     configure_vr_egui_style, draw_panel_ui, spawn_world_panel, WorldPanel, WorldPanelDefaults,
     WorldPanelParams,
 };
-
-/// Frontier statistics from Loki log aggregation
-#[derive(Resource, Default)]
-pub struct FrontierStats {
-    pub submit_events: u64,
-    pub new_urls_queued: u64,
-    pub fetch_success: u64,
-    pub fetch_failures: u64,
-    pub robots_blocked: u64,
-    pub dead_urls: u64,
-    pub pending: u64,
-    pub fetching: u64,
-    pub last_updated: Option<Instant>,
-    pub fetch_error: Option<String>,
-}
 
 /// Marker component for the frontier panel
 #[derive(Component)]
@@ -77,7 +62,6 @@ pub fn render_frontier_panel_ui(
                 ui.separator();
 
                 if let Some(ref stats) = stats {
-                    // Status line
                     ui.horizontal(|ui| {
                         if let Some(last) = stats.last_updated {
                             let ago = last.elapsed().as_secs();
@@ -93,33 +77,30 @@ pub fn render_frontier_panel_ui(
 
                     ui.add_space(8.0);
 
-                    // Queue section
                     ui.label(egui::RichText::new("Queue").strong().size(14.0));
                     ui.horizontal(|ui| {
-                        stat_box(ui, "Pending", stats.pending, egui::Color32::from_rgb(70, 130, 180));
-                        stat_box(ui, "Fetching", stats.fetching, egui::Color32::from_rgb(218, 165, 32));
+                        stat_box(ui, "Pending", stats.data.pending, egui::Color32::from_rgb(70, 130, 180));
+                        stat_box(ui, "Fetching", stats.data.fetching, egui::Color32::from_rgb(218, 165, 32));
                     });
 
                     ui.add_space(8.0);
 
-                    // Activity section
                     ui.label(egui::RichText::new("Activity").strong().size(14.0));
                     ui.horizontal(|ui| {
-                        stat_box(ui, "Submitted", stats.submit_events, egui::Color32::from_rgb(100, 149, 237));
-                        stat_box(ui, "Queued", stats.new_urls_queued, egui::Color32::from_rgb(138, 43, 226));
+                        stat_box(ui, "Submitted", stats.data.submit_events, egui::Color32::from_rgb(100, 149, 237));
+                        stat_box(ui, "Queued", stats.data.new_urls_queued, egui::Color32::from_rgb(138, 43, 226));
                     });
                     ui.horizontal(|ui| {
-                        stat_box(ui, "Fetched", stats.fetch_success, egui::Color32::from_rgb(50, 205, 50));
-                        stat_box(ui, "Failed", stats.fetch_failures, egui::Color32::from_rgb(220, 20, 60));
+                        stat_box(ui, "Fetched", stats.data.fetch_success, egui::Color32::from_rgb(50, 205, 50));
+                        stat_box(ui, "Failed", stats.data.fetch_failures, egui::Color32::from_rgb(220, 20, 60));
                     });
 
                     ui.add_space(8.0);
 
-                    // Blocks section
                     ui.label(egui::RichText::new("Blocked").strong().size(14.0));
                     ui.horizontal(|ui| {
-                        stat_box(ui, "Robots", stats.robots_blocked, egui::Color32::from_rgb(255, 140, 0));
-                        stat_box(ui, "Dead", stats.dead_urls, egui::Color32::from_rgb(139, 0, 0));
+                        stat_box(ui, "Robots", stats.data.robots_blocked, egui::Color32::from_rgb(255, 140, 0));
+                        stat_box(ui, "Dead", stats.data.dead_urls, egui::Color32::from_rgb(139, 0, 0));
                     });
                 } else {
                     ui.label("FrontierStats not initialized.");

@@ -13,11 +13,15 @@ use northcloud_oculus::data::{DataIngestionConfig, DataIngestionPlugin};
 use northcloud_oculus::interaction::InteractionPlugin;
 use northcloud_oculus::node_marker::NodeMarkerPlugin;
 use northcloud_oculus::panels::{spawn_classifier_panel, spawn_frontier_panel, PanelsPlugin};
-use northcloud_oculus::world_panel::WorldPanelPlugin;
+use northcloud_oculus::world_panel::{WorldPanelDefaults, WorldPanelPlugin};
 
 fn main() -> AppExit {
-    // Load .env file if present
-    let _ = dotenvy::dotenv();
+    // Load .env file if present (file-not-found is fine; parse errors are warned)
+    match dotenvy::dotenv() {
+        Ok(path) => info!("Loaded .env from {}", path.display()),
+        Err(dotenvy::Error::Io(ref e)) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => warn!(".env file found but could not be loaded: {e}"),
+    }
 
     App::new()
         .add_plugins(add_xr_plugins(
@@ -77,5 +81,3 @@ fn setup_scene(
         Transform::from_xyz(4.0, 8.0, 4.0),
     ));
 }
-
-use northcloud_oculus::world_panel::WorldPanelDefaults;
