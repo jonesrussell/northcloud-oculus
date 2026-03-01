@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use crate::node_marker::NodeHealth;
 
-use super::{DataError, DataSource, NodeStatus};
+use super::{DataError, DataSource, LogAnalysisConfig, NodeStatus};
 
 /// Loki client configuration
 #[derive(Clone)]
@@ -78,44 +78,11 @@ impl LokiClient {
     }
 
     fn analyze_logs(&self, logs: &[(String, String)]) -> (NodeHealth, HashMap<String, f64>) {
-        let mut critical_count = 0;
-        let mut warning_count = 0;
-        let total = logs.len();
-
-        for (_, line) in logs {
-            let lower = line.to_lowercase();
-
-            if self
-                .config
-                .critical_patterns
-                .iter()
-                .any(|p| lower.contains(p))
-            {
-                critical_count += 1;
-            } else if self
-                .config
-                .warning_patterns
-                .iter()
-                .any(|p| lower.contains(p))
-            {
-                warning_count += 1;
-            }
-        }
-
-        let health = if critical_count > 0 {
-            NodeHealth::Critical
-        } else if warning_count > 0 {
-            NodeHealth::Warning
-        } else {
-            NodeHealth::Healthy
+        let config = LogAnalysisConfig {
+            critical_patterns: self.config.critical_patterns.clone(),
+            warning_patterns: self.config.warning_patterns.clone(),
         };
-
-        let mut metrics = HashMap::new();
-        metrics.insert("log_count".to_string(), total as f64);
-        metrics.insert("error_count".to_string(), critical_count as f64);
-        metrics.insert("warning_count".to_string(), warning_count as f64);
-
-        (health, metrics)
+        super::analyze_logs(logs, &config)
     }
 }
 
