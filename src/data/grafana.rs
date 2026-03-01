@@ -1,4 +1,4 @@
-//! Grafana API client
+//! Grafana datasource proxy client for Prometheus metric queries and Loki log queries
 
 use bevy::log::warn;
 use serde::Deserialize;
@@ -7,7 +7,7 @@ use std::time::Instant;
 
 use super::{DataError, HealthThresholds, LogAnalysisConfig, NodeStatus};
 
-/// Grafana connection configuration (shared by all queries)
+/// Grafana connection configuration (base URL and authentication)
 #[derive(Clone)]
 pub struct GrafanaConfig {
     pub base_url: String,
@@ -26,9 +26,13 @@ impl Default for GrafanaConfig {
 /// Prometheus query routed through Grafana's datasource proxy
 #[derive(Clone)]
 pub struct GrafanaPrometheusQuery {
+    /// UID of the Grafana datasource to query
     pub datasource_uid: String,
+    /// PromQL expression to execute
     pub query: String,
+    /// Metric label to use as the node identifier
     pub id_label: String,
+    /// Health classification thresholds for metric values
     pub thresholds: HealthThresholds,
 }
 
@@ -46,10 +50,15 @@ impl Default for GrafanaPrometheusQuery {
 /// Loki query routed through Grafana's datasource proxy
 #[derive(Clone)]
 pub struct GrafanaLokiQuery {
+    /// UID of the Grafana datasource to query
     pub datasource_uid: String,
+    /// LogQL expression to execute
     pub query: String,
+    /// Stream label to use as the node identifier
     pub id_label: String,
+    /// Time window for the log query (in seconds)
     pub range_seconds: u64,
+    /// Pattern matching config for classifying log health
     pub log_analysis: LogAnalysisConfig,
 }
 
@@ -98,7 +107,7 @@ struct GrafanaFrameData {
     values: Vec<Vec<serde_json::Value>>,
 }
 
-/// Grafana data source client
+/// HTTP client for querying Grafana's datasource proxy API
 pub struct GrafanaClient {
     pub config: GrafanaConfig,
     client: reqwest::Client,
@@ -310,6 +319,7 @@ impl GrafanaClient {
             let line_values = frame.data.values.get(line_idx);
 
             let (Some(labels_values), Some(line_values)) = (labels_values, line_values) else {
+                warn!("Grafana/Loki: frame has schema fields but data arrays are missing, skipping");
                 continue;
             };
 
@@ -326,8 +336,15 @@ impl GrafanaClient {
             }
 
             for (label_json, logs) in &grouped {
-                let labels: HashMap<String, String> =
-                    serde_json::from_str(label_json).unwrap_or_default();
+                let labels: HashMap<String, String> = match serde_json::from_str(label_json) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        warn!(
+                            "Grafana/Loki: failed to parse label JSON, skipping entry: {e}"
+                        );
+                        continue;
+                    }
+                };
 
                 let id = labels
                     .get(&query.id_label)
@@ -337,8 +354,20 @@ impl GrafanaClient {
                         "unknown".to_string()
                     });
 
-                let lat = labels.get("lat").and_then(|v| v.parse().ok()).unwrap_or(0.0);
-                let lon = labels.get("lon").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                let lat = labels
+                    .get("lat")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| {
+                        warn!("Grafana/Loki node {id}: missing or invalid 'lat' label, defaulting to 0.0");
+                        0.0
+                    });
+                let lon = labels
+                    .get("lon")
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or_else(|| {
+                        warn!("Grafana/Loki node {id}: missing or invalid 'lon' label, defaulting to 0.0");
+                        0.0
+                    });
 
                 let (health, metrics) = super::analyze_logs(logs, &query.log_analysis);
 

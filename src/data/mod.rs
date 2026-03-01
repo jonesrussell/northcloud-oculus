@@ -1,4 +1,4 @@
-//! Data ingestion from Prometheus, Grafana, and Loki
+//! Data ingestion via the Grafana datasource proxy API (Prometheus and Loki queries)
 
 mod node_status;
 mod prometheus;
@@ -34,11 +34,11 @@ impl Plugin for DataIngestionPlugin {
 pub struct DataIngestionConfig {
     /// Poll interval in seconds
     pub poll_interval_secs: f32,
-    /// Grafana connection configuration (None = disabled)
+    /// Grafana connection (None = data ingestion disabled)
     pub grafana: Option<GrafanaConfig>,
-    /// Prometheus query config (routed through Grafana)
+    /// Prometheus query via Grafana (None = disabled)
     pub prometheus_query: Option<GrafanaPrometheusQuery>,
-    /// Loki query config (routed through Grafana)
+    /// Loki query via Grafana (None = disabled)
     pub loki_query: Option<GrafanaLokiQuery>,
 }
 
@@ -164,20 +164,53 @@ impl DataIngestionConfig {
     ///
     /// Reads:
     /// - `GRAFANA_URL` — Grafana base URL (required to enable data ingestion)
-    /// - `GRAFANA_TOKEN` — Grafana service account token (optional in dev, required in prod)
+    /// - `GRAFANA_TOKEN` — Grafana service account token (optional; required if Grafana has auth enabled)
     /// - `POLL_INTERVAL_SECS` — polling interval (optional, default 30)
     pub fn from_env() -> Self {
-        let grafana_url = std::env::var("GRAFANA_URL").ok();
-        let grafana_token = std::env::var("GRAFANA_TOKEN").ok();
-        let poll_interval: f32 = std::env::var("POLL_INTERVAL_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(30.0);
+        Self::from_env_vars(
+            std::env::var("GRAFANA_URL").ok(),
+            std::env::var("GRAFANA_TOKEN").ok(),
+            std::env::var("POLL_INTERVAL_SECS").ok(),
+        )
+    }
 
-        let grafana = grafana_url.map(|url| GrafanaConfig {
-            base_url: url,
-            api_key: grafana_token,
+    fn from_env_vars(
+        grafana_url: Option<String>,
+        grafana_token: Option<String>,
+        poll_interval_str: Option<String>,
+    ) -> Self {
+        let poll_interval: f32 = match poll_interval_str {
+            Some(val) => match val.parse::<f32>() {
+                Ok(secs) if secs > 0.0 && secs.is_finite() => secs,
+                Ok(secs) => {
+                    warn!(
+                        "POLL_INTERVAL_SECS={secs} is invalid (must be positive and finite), defaulting to 30"
+                    );
+                    30.0
+                }
+                Err(e) => {
+                    warn!("POLL_INTERVAL_SECS could not be parsed: {e}, defaulting to 30");
+                    30.0
+                }
+            },
+            None => 30.0,
+        };
+
+        let grafana = grafana_url.map(|url| {
+            info!(
+                "Grafana data ingestion enabled: url={}, token={}",
+                url,
+                if grafana_token.is_some() { "set" } else { "not set" }
+            );
+            GrafanaConfig {
+                base_url: url,
+                api_key: grafana_token,
+            }
         });
+
+        if grafana.is_none() {
+            warn!("GRAFANA_URL not set — data ingestion is disabled");
+        }
 
         let prometheus_query = if grafana.is_some() {
             Some(GrafanaPrometheusQuery::default())
@@ -205,26 +238,55 @@ mod tests {
     use super::*;
 
     #[test]
-    fn config_from_env_with_grafana_url() {
-        std::env::set_var("GRAFANA_URL", "https://northcloud.one/grafana");
-        std::env::set_var("GRAFANA_TOKEN", "test-token-123");
-
-        let config = DataIngestionConfig::from_env();
+    fn config_with_grafana_url() {
+        let config = DataIngestionConfig::from_env_vars(
+            Some("https://northcloud.one/grafana".to_string()),
+            Some("test-token-123".to_string()),
+            None,
+        );
 
         let grafana = config.grafana.expect("grafana config should be set");
         assert_eq!(grafana.base_url, "https://northcloud.one/grafana");
         assert_eq!(grafana.api_key.unwrap(), "test-token-123");
-
-        std::env::remove_var("GRAFANA_URL");
-        std::env::remove_var("GRAFANA_TOKEN");
+        assert!(config.prometheus_query.is_some());
+        assert!(config.loki_query.is_some());
     }
 
     #[test]
-    fn config_from_env_without_grafana_url() {
-        std::env::remove_var("GRAFANA_URL");
-        std::env::remove_var("GRAFANA_TOKEN");
-
-        let config = DataIngestionConfig::from_env();
+    fn config_without_grafana_url() {
+        let config = DataIngestionConfig::from_env_vars(None, None, None);
         assert!(config.grafana.is_none());
+        assert!(config.prometheus_query.is_none());
+        assert!(config.loki_query.is_none());
+    }
+
+    #[test]
+    fn config_poll_interval_parsed() {
+        let config = DataIngestionConfig::from_env_vars(
+            None,
+            None,
+            Some("15".to_string()),
+        );
+        assert_eq!(config.poll_interval_secs, 15.0);
+    }
+
+    #[test]
+    fn config_poll_interval_invalid_falls_back() {
+        let config = DataIngestionConfig::from_env_vars(
+            None,
+            None,
+            Some("not-a-number".to_string()),
+        );
+        assert_eq!(config.poll_interval_secs, 30.0);
+    }
+
+    #[test]
+    fn config_poll_interval_negative_falls_back() {
+        let config = DataIngestionConfig::from_env_vars(
+            None,
+            None,
+            Some("-5".to_string()),
+        );
+        assert_eq!(config.poll_interval_secs, 30.0);
     }
 }

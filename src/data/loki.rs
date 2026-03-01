@@ -79,10 +79,10 @@ impl LokiClient {
     }
 
     fn analyze_logs(&self, logs: &[(String, String)]) -> (NodeHealth, HashMap<String, f64>) {
-        let config = LogAnalysisConfig {
-            critical_patterns: self.config.critical_patterns.clone(),
-            warning_patterns: self.config.warning_patterns.clone(),
-        };
+        let config = LogAnalysisConfig::new(
+            self.config.critical_patterns.clone(),
+            self.config.warning_patterns.clone(),
+        );
         super::analyze_logs(logs, &config)
     }
 }

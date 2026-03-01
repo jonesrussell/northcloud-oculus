@@ -92,24 +92,46 @@ impl HealthThresholds {
     }
 }
 
-/// Configuration for log-based health analysis
+/// Configuration for log-based health analysis.
+///
+/// Patterns are matched case-insensitively via substring search (stored lowercase).
+/// Critical patterns take priority: if any log line matches a critical pattern,
+/// the node is classified as Critical; otherwise if any matches a warning pattern,
+/// the node is Warning.
 #[derive(Clone, Debug)]
 pub struct LogAnalysisConfig {
     pub critical_patterns: Vec<String>,
     pub warning_patterns: Vec<String>,
 }
 
-impl Default for LogAnalysisConfig {
-    fn default() -> Self {
+impl LogAnalysisConfig {
+    pub fn new(critical_patterns: Vec<String>, warning_patterns: Vec<String>) -> Self {
         Self {
-            critical_patterns: vec!["error".to_string(), "fatal".to_string(), "panic".to_string()],
-            warning_patterns: vec!["warn".to_string(), "warning".to_string()],
+            critical_patterns: critical_patterns
+                .into_iter()
+                .map(|p| p.to_lowercase())
+                .filter(|p| !p.is_empty())
+                .collect(),
+            warning_patterns: warning_patterns
+                .into_iter()
+                .map(|p| p.to_lowercase())
+                .filter(|p| !p.is_empty())
+                .collect(),
         }
     }
 }
 
+impl Default for LogAnalysisConfig {
+    fn default() -> Self {
+        Self::new(
+            vec!["error".to_string(), "fatal".to_string(), "panic".to_string()],
+            vec!["warn".to_string(), "warning".to_string()],
+        )
+    }
+}
+
 /// Analyze log lines and classify health based on pattern matches.
-/// Returns (health, metrics) where metrics contains log_count, error_count, warning_count.
+/// Returns (health, metrics) where metrics contains log_count, critical_count, warning_count.
 pub fn analyze_logs(
     logs: &[(String, String)],
     config: &LogAnalysisConfig,
@@ -137,7 +159,7 @@ pub fn analyze_logs(
 
     let mut metrics = HashMap::new();
     metrics.insert("log_count".to_string(), total as f64);
-    metrics.insert("error_count".to_string(), critical_count as f64);
+    metrics.insert("critical_count".to_string(), critical_count as f64);
     metrics.insert("warning_count".to_string(), warning_count as f64);
 
     (health, metrics)
@@ -177,10 +199,10 @@ mod tests {
 
     #[test]
     fn analyze_logs_healthy_when_no_patterns() {
-        let patterns = LogAnalysisConfig {
-            critical_patterns: vec!["error".to_string(), "fatal".to_string()],
-            warning_patterns: vec!["warn".to_string()],
-        };
+        let patterns = LogAnalysisConfig::new(
+            vec!["error".to_string(), "fatal".to_string()],
+            vec!["warn".to_string()],
+        );
         let logs = vec![
             ("1".to_string(), "all systems normal".to_string()),
             ("2".to_string(), "request completed".to_string()),
@@ -188,30 +210,30 @@ mod tests {
         let (health, metrics) = analyze_logs(&logs, &patterns);
         assert_eq!(health, NodeHealth::Healthy);
         assert_eq!(metrics["log_count"], 2.0);
-        assert_eq!(metrics["error_count"], 0.0);
+        assert_eq!(metrics["critical_count"], 0.0);
         assert_eq!(metrics["warning_count"], 0.0);
     }
 
     #[test]
     fn analyze_logs_critical_when_error_found() {
-        let patterns = LogAnalysisConfig {
-            critical_patterns: vec!["error".to_string(), "fatal".to_string()],
-            warning_patterns: vec!["warn".to_string()],
-        };
+        let patterns = LogAnalysisConfig::new(
+            vec!["error".to_string(), "fatal".to_string()],
+            vec!["warn".to_string()],
+        );
         let logs = vec![
             ("1".to_string(), "fatal crash detected".to_string()),
         ];
         let (health, metrics) = analyze_logs(&logs, &patterns);
         assert_eq!(health, NodeHealth::Critical);
-        assert_eq!(metrics["error_count"], 1.0);
+        assert_eq!(metrics["critical_count"], 1.0);
     }
 
     #[test]
     fn analyze_logs_warning_when_warn_found() {
-        let patterns = LogAnalysisConfig {
-            critical_patterns: vec!["error".to_string()],
-            warning_patterns: vec!["warn".to_string()],
-        };
+        let patterns = LogAnalysisConfig::new(
+            vec!["error".to_string()],
+            vec!["warn".to_string()],
+        );
         let logs = vec![
             ("1".to_string(), "disk usage warning threshold".to_string()),
         ];
@@ -226,6 +248,33 @@ mod tests {
         let logs: Vec<(String, String)> = vec![];
         let (health, _metrics) = analyze_logs(&logs, &patterns);
         assert_eq!(health, NodeHealth::Healthy);
+    }
+
+    #[test]
+    fn analyze_logs_normalizes_uppercase_patterns() {
+        let patterns = LogAnalysisConfig::new(
+            vec!["ERROR".to_string(), "FATAL".to_string()],
+            vec!["WARN".to_string()],
+        );
+        // Patterns should be lowercased, so they match lowercase log content
+        assert_eq!(patterns.critical_patterns, vec!["error", "fatal"]);
+        assert_eq!(patterns.warning_patterns, vec!["warn"]);
+
+        let logs = vec![
+            ("1".to_string(), "An ERROR occurred".to_string()),
+        ];
+        let (health, _) = analyze_logs(&logs, &patterns);
+        assert_eq!(health, NodeHealth::Critical);
+    }
+
+    #[test]
+    fn analyze_logs_filters_empty_patterns() {
+        let patterns = LogAnalysisConfig::new(
+            vec!["error".to_string(), "".to_string()],
+            vec!["".to_string()],
+        );
+        assert_eq!(patterns.critical_patterns, vec!["error"]);
+        assert!(patterns.warning_patterns.is_empty());
     }
 
     #[test]
