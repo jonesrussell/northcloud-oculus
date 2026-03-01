@@ -2,3 +2,4 @@
 *.spv
 .claude/settings.local.json
 .env
+.worktrees/
