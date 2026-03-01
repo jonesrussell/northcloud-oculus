@@ -157,4 +157,72 @@ impl DataIngestionConfig {
         self.loki_query = Some(query);
         self
     }
+
+    /// Build config from environment variables.
+    ///
+    /// Reads:
+    /// - `GRAFANA_URL` — Grafana base URL (required to enable data ingestion)
+    /// - `GRAFANA_TOKEN` — Grafana service account token (optional in dev, required in prod)
+    /// - `POLL_INTERVAL_SECS` — polling interval (optional, default 30)
+    pub fn from_env() -> Self {
+        let grafana_url = std::env::var("GRAFANA_URL").ok();
+        let grafana_token = std::env::var("GRAFANA_TOKEN").ok();
+        let poll_interval: f32 = std::env::var("POLL_INTERVAL_SECS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(30.0);
+
+        let grafana = grafana_url.map(|url| GrafanaConfig {
+            base_url: url,
+            api_key: grafana_token,
+        });
+
+        let prometheus_query = if grafana.is_some() {
+            Some(GrafanaPrometheusQuery::default())
+        } else {
+            None
+        };
+
+        let loki_query = if grafana.is_some() {
+            Some(GrafanaLokiQuery::default())
+        } else {
+            None
+        };
+
+        Self {
+            poll_interval_secs: poll_interval,
+            grafana,
+            prometheus_query,
+            loki_query,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn config_from_env_with_grafana_url() {
+        std::env::set_var("GRAFANA_URL", "https://northcloud.one/grafana");
+        std::env::set_var("GRAFANA_TOKEN", "test-token-123");
+
+        let config = DataIngestionConfig::from_env();
+
+        let grafana = config.grafana.expect("grafana config should be set");
+        assert_eq!(grafana.base_url, "https://northcloud.one/grafana");
+        assert_eq!(grafana.api_key.unwrap(), "test-token-123");
+
+        std::env::remove_var("GRAFANA_URL");
+        std::env::remove_var("GRAFANA_TOKEN");
+    }
+
+    #[test]
+    fn config_from_env_without_grafana_url() {
+        std::env::remove_var("GRAFANA_URL");
+        std::env::remove_var("GRAFANA_TOKEN");
+
+        let config = DataIngestionConfig::from_env();
+        assert!(config.grafana.is_none());
+    }
 }
