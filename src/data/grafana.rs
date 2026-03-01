@@ -235,9 +235,125 @@ impl GrafanaClient {
         Ok(nodes)
     }
 
-    pub async fn fetch_logs(&self, _query: &GrafanaLokiQuery) -> Result<Vec<NodeStatus>, DataError> {
-        // TODO: implement in Task 3
-        Ok(Vec::new())
+    pub async fn fetch_logs(&self, query: &GrafanaLokiQuery) -> Result<Vec<NodeStatus>, DataError> {
+        let url = format!("{}/api/ds/query", self.config.base_url);
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|e| DataError::ParseError(format!("System clock error: {e}")))?
+            .as_millis() as i64;
+
+        let from = now - (query.range_seconds as i64 * 1000);
+
+        let body = serde_json::json!({
+            "queries": [{
+                "refId": "A",
+                "datasource": {
+                    "uid": query.datasource_uid
+                },
+                "expr": query.query,
+                "queryType": "range",
+                "maxLines": 1000
+            }],
+            "from": from.to_string(),
+            "to": now.to_string()
+        });
+
+        let mut request = self.client.post(&url).json(&body);
+
+        if let Some(ref api_key) = self.config.api_key {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| DataError::NetworkError(e.to_string()))?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            || response.status() == reqwest::StatusCode::FORBIDDEN
+        {
+            return Err(DataError::AuthError(format!(
+                "Grafana authentication failed (HTTP {})",
+                response.status().as_u16()
+            )));
+        }
+
+        if !response.status().is_success() {
+            return Err(DataError::NetworkError(format!(
+                "Grafana/Loki query failed: HTTP {}",
+                response.status()
+            )));
+        }
+
+        let body: GrafanaQueryResponse = response
+            .json()
+            .await
+            .map_err(|e| DataError::ParseError(e.to_string()))?;
+
+        let result = body.results.get("A").ok_or_else(|| {
+            DataError::ParseError("Grafana response missing expected result 'A'".to_string())
+        })?;
+
+        let mut nodes = Vec::new();
+
+        for frame in &result.frames {
+            let labels_idx = frame.schema.fields.iter().position(|f| f.name == "labels");
+            let line_idx = frame.schema.fields.iter().position(|f| f.name == "Line");
+
+            let (Some(labels_idx), Some(line_idx)) = (labels_idx, line_idx) else {
+                warn!("Grafana/Loki: frame missing 'labels' or 'Line' field, skipping");
+                continue;
+            };
+
+            let labels_values = frame.data.values.get(labels_idx);
+            let line_values = frame.data.values.get(line_idx);
+
+            let (Some(labels_values), Some(line_values)) = (labels_values, line_values) else {
+                continue;
+            };
+
+            // Group log lines by their labels (each unique label set = one node)
+            let mut grouped: HashMap<String, Vec<(String, String)>> = HashMap::new();
+
+            for (i, label_val) in labels_values.iter().enumerate() {
+                let label_str = label_val.as_str().unwrap_or("{}");
+                let line = line_values.get(i).and_then(|v| v.as_str()).unwrap_or("");
+                grouped
+                    .entry(label_str.to_string())
+                    .or_default()
+                    .push((i.to_string(), line.to_string()));
+            }
+
+            for (label_json, logs) in &grouped {
+                let labels: HashMap<String, String> =
+                    serde_json::from_str(label_json).unwrap_or_default();
+
+                let id = labels
+                    .get(&query.id_label)
+                    .cloned()
+                    .unwrap_or_else(|| {
+                        warn!("Grafana/Loki: missing '{}' label, using fallback", query.id_label);
+                        "unknown".to_string()
+                    });
+
+                let lat = labels.get("lat").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+                let lon = labels.get("lon").and_then(|v| v.parse().ok()).unwrap_or(0.0);
+
+                let (health, metrics) = super::analyze_logs(logs, &query.log_analysis);
+
+                nodes.push(NodeStatus {
+                    id,
+                    lat,
+                    lon,
+                    health,
+                    metrics,
+                    last_updated: Instant::now(),
+                });
+            }
+        }
+
+        Ok(nodes)
     }
 }
 
@@ -267,5 +383,41 @@ mod tests {
         assert_eq!(q.id_label, "service");
         assert_eq!(q.range_seconds, 300);
         assert!(!q.log_analysis.critical_patterns.is_empty());
+    }
+
+    #[test]
+    fn parse_grafana_loki_response() {
+        let json = serde_json::json!({
+            "results": {
+                "A": {
+                    "frames": [
+                        {
+                            "schema": {
+                                "fields": [
+                                    {"name": "labels", "type": "string"},
+                                    {"name": "Time", "type": "time"},
+                                    {"name": "Line", "type": "string"}
+                                ]
+                            },
+                            "data": {
+                                "values": [
+                                    ["{\"service\":\"crawler\"}"],
+                                    [1709000000000_i64],
+                                    ["error: connection refused"]
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        });
+
+        let response: GrafanaQueryResponse = serde_json::from_value(json).unwrap();
+        let result = response.results.get("A").unwrap();
+        assert_eq!(result.frames.len(), 1);
+
+        let frame = &result.frames[0];
+        let line_idx = frame.schema.fields.iter().position(|f| f.name == "Line");
+        assert!(line_idx.is_some());
     }
 }
