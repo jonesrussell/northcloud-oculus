@@ -10,6 +10,8 @@ pub use grafana::*;
 // prometheus and loki modules retained but not re-exported
 // (all queries now route through GrafanaClient)
 
+use crate::panels::{FrontierStats, LogBuffer, LogEntry, LogLevel};
+
 use bevy::prelude::*;
 use bevy::tasks::{block_on, poll_once, AsyncComputeTaskPool, Task};
 
@@ -24,6 +26,7 @@ impl Plugin for DataIngestionPlugin {
             app.init_resource::<DataIngestionConfig>();
         }
         app.init_resource::<NodeStatusBuffer>()
+            .init_resource::<LogBuffer>()
             .init_resource::<DataIngestionState>()
             .add_systems(Update, (poll_data_sources, apply_node_status_updates).chain());
     }
@@ -45,7 +48,7 @@ pub struct DataIngestionConfig {
 impl Default for DataIngestionConfig {
     fn default() -> Self {
         Self {
-            poll_interval_secs: 30.0,
+            poll_interval_secs: 10.0,
             grafana: None,
             prometheus_query: None,
             loki_query: None,
@@ -53,11 +56,19 @@ impl Default for DataIngestionConfig {
     }
 }
 
+/// Result from data ingestion task
+pub struct DataIngestionResult {
+    pub nodes: Vec<NodeStatus>,
+    pub logs: Vec<RawLogEntry>,
+    pub log_error: Option<String>,
+    pub frontier_stats: Option<FrontierStatsResult>,
+}
+
 /// Internal state for data polling
 #[derive(Resource, Default)]
 pub struct DataIngestionState {
     pub last_poll: Option<f32>,
-    pub pending_task: Option<Task<Vec<NodeStatus>>>,
+    pub pending_task: Option<Task<DataIngestionResult>>,
 }
 
 /// System that polls data sources on an interval
@@ -87,29 +98,71 @@ pub fn poll_data_sources(
 
     let task_pool = AsyncComputeTaskPool::get();
     let task = task_pool.spawn(async move {
-        let mut all_nodes = Vec::new();
+        // Create a Tokio runtime for reqwest (which requires Tokio)
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create Tokio runtime");
 
-        let Some(grafana_config) = grafana_config else {
-            return all_nodes;
-        };
+        rt.block_on(async {
+            let mut result = DataIngestionResult {
+                nodes: Vec::new(),
+                logs: Vec::new(),
+                log_error: None,
+                frontier_stats: None,
+            };
 
-        let client = GrafanaClient::new(grafana_config);
+            let Some(grafana_config) = grafana_config else {
+                warn!("No Grafana config — data ingestion disabled");
+                return result;
+            };
 
-        if let Some(ref prom_query) = prometheus_query {
-            match client.fetch_nodes(prom_query).await {
-                Ok(nodes) => all_nodes.extend(nodes),
-                Err(e) => warn!("Grafana/Prometheus fetch failed: {e}"),
+            info!("Polling Grafana at {}", grafana_config.base_url);
+            let client = GrafanaClient::new(grafana_config);
+
+            if let Some(ref prom_query) = prometheus_query {
+                match client.fetch_nodes(prom_query).await {
+                    Ok(nodes) => {
+                        info!("Prometheus: fetched {} nodes", nodes.len());
+                        result.nodes.extend(nodes);
+                    }
+                    Err(e) => warn!("Grafana/Prometheus fetch failed: {e}"),
+                }
             }
-        }
 
-        if let Some(ref loki_query) = loki_query {
-            match client.fetch_logs(loki_query).await {
-                Ok(nodes) => all_nodes.extend(nodes),
-                Err(e) => warn!("Grafana/Loki fetch failed: {e}"),
+            if let Some(ref loki_query) = loki_query {
+                // Fetch analyzed nodes for health status
+                match client.fetch_logs(loki_query).await {
+                    Ok(nodes) => {
+                        info!("Loki logs: fetched {} nodes", nodes.len());
+                        result.nodes.extend(nodes);
+                    }
+                    Err(e) => warn!("Grafana/Loki fetch failed: {e}"),
+                }
+                // Also fetch raw logs for classifier panel
+                match client.fetch_raw_logs(loki_query).await {
+                    Ok(logs) => {
+                        info!("Loki raw logs: fetched {} entries", logs.len());
+                        result.logs = logs;
+                    }
+                    Err(e) => {
+                        warn!("Grafana/Loki raw log fetch failed: {e}");
+                        result.log_error = Some(e.to_string());
+                    }
+                }
             }
-        }
 
-        all_nodes
+            // Fetch frontier stats (24h window)
+            info!("Fetching frontier stats...");
+            let frontier = client.fetch_frontier_stats(86400).await;
+            info!(
+                "Frontier stats: submitted={}, fetched={}, pending={}",
+                frontier.submit_events, frontier.fetch_success, frontier.pending
+            );
+            result.frontier_stats = Some(frontier);
+
+            result
+        })
     });
 
     state.pending_task = Some(task);
@@ -119,6 +172,8 @@ pub fn poll_data_sources(
 pub fn apply_node_status_updates(
     mut state: ResMut<DataIngestionState>,
     mut buffer: ResMut<NodeStatusBuffer>,
+    mut log_buffer: ResMut<LogBuffer>,
+    mut frontier_stats: ResMut<FrontierStats>,
     mut markers: Query<&mut NodeMarker>,
 ) {
     let Some(ref mut task) = state.pending_task else {
@@ -130,16 +185,61 @@ pub fn apply_node_status_updates(
     }
 
     let mut task = state.pending_task.take().unwrap();
-    let nodes = block_on(poll_once(&mut task)).unwrap_or_else(|| {
+    let result = block_on(poll_once(&mut task)).unwrap_or_else(|| {
         warn!("Data ingestion task returned no result despite being finished");
-        Vec::new()
+        DataIngestionResult {
+            nodes: Vec::new(),
+            logs: Vec::new(),
+            log_error: Some("Task failed".to_string()),
+            frontier_stats: None,
+        }
     });
 
-    for node in nodes {
+    // Update node status buffer and markers
+    for node in result.nodes {
         if let Some(mut marker) = markers.iter_mut().find(|m| m.id == node.id) {
             marker.health = node.health;
         }
         buffer.update(node);
+    }
+
+    // Update log buffer for classifier panel
+    log_buffer.last_fetch = Some(std::time::Instant::now());
+    log_buffer.fetch_error = result.log_error;
+    for raw_log in result.logs {
+        let level = classify_log_level(&raw_log.message);
+        log_buffer.push(LogEntry {
+            timestamp: raw_log.timestamp,
+            source: raw_log.source,
+            message: raw_log.message,
+            level,
+        });
+    }
+
+    // Update frontier stats
+    if let Some(stats) = result.frontier_stats {
+        frontier_stats.submit_events = stats.submit_events;
+        frontier_stats.new_urls_queued = stats.new_urls_queued;
+        frontier_stats.fetch_success = stats.fetch_success;
+        frontier_stats.fetch_failures = stats.fetch_failures;
+        frontier_stats.robots_blocked = stats.robots_blocked;
+        frontier_stats.dead_urls = stats.dead_urls;
+        frontier_stats.pending = stats.pending;
+        frontier_stats.fetching = stats.fetching;
+        frontier_stats.last_updated = Some(std::time::Instant::now());
+        frontier_stats.fetch_error = None;
+    }
+}
+
+/// Classify log level based on message content
+fn classify_log_level(message: &str) -> LogLevel {
+    let lower = message.to_lowercase();
+    if lower.contains("error") || lower.contains("fatal") || lower.contains("panic") {
+        LogLevel::Error
+    } else if lower.contains("warn") {
+        LogLevel::Warning
+    } else {
+        LogLevel::Info
     }
 }
 
