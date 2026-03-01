@@ -64,10 +64,10 @@ pub fn perform_raycast(
             target_transform.translation,
             bounds.half_extents * target_transform.scale,
         ) {
-            if distance <= config.length {
-                if closest_hit.is_none() || distance < closest_hit.as_ref().unwrap().2 {
-                    closest_hit = Some((entity, hit_point, distance));
-                }
+            if distance <= config.length
+                && (closest_hit.is_none() || distance < closest_hit.as_ref().unwrap().2)
+            {
+                closest_hit = Some((entity, hit_point, distance));
             }
         }
     }

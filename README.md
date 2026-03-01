@@ -1,8 +1,8 @@
 # northcloud-oculus
 
-UML diagram VR viewer targeting the Oculus Rift CV1 and Meta Quest 3 (via Quest Link). Built with **Bevy 0.18** and **bevy_mod_openxr**.
+VR observability cockpit targeting the Oculus Rift CV1 and Meta Quest 3 (via Quest Link). Built with **Bevy 0.18** and **bevy_mod_openxr**.
 
-Renders a static diagram (class boxes + edges) in VR. Optional debug cube at (0, 0, -2); set `NORTHCLOUD_DEBUG_CUBE=0` or `false` to disable.
+Visualizes infrastructure metrics from Prometheus, Grafana, and Loki in immersive VR with world-space UI panels.
 
 ## Prerequisites
 
@@ -39,13 +39,14 @@ Use `--release` for VR performance (debug builds are too slow in-headset).
 
 ## What You Should See
 
-- **In headset:** UML diagram (three colored boxes and two gray edges) in 3D; optional green debug cube at (0, 0, -2).
-- **Exit:** Close the window, Ctrl+C in terminal, or remove headset.
+- **In headset:** A world-space panel displaying "Northcloud Oculus" with status and uptime information
+- **Exit:** Close the window, Ctrl+C in terminal, or remove headset
 
 ## How It Works
 
-- **Bevy + bevy_mod_openxr** — Bevy handles rendering (wgpu); bevy_mod_openxr provides the OpenXR session, swapchain, and XR camera/views. We only spawn world-space entities (diagram nodes, edges, light).
-- **Diagram** — One Startup system spawns nodes as quads, edges as thin cuboids, and an optional debug cube. Marker components (`DiagramNode`, `DiagramEdge`, `DebugCube`) identify diagram entities for future interaction.
+- **Bevy + bevy_mod_openxr** — Bevy handles rendering (wgpu); bevy_mod_openxr provides the OpenXR session, swapchain, and XR camera/views
+- **WorldPanel** — Renders egui UI to textures displayed on 3D quads in world space
+- **Interaction** — VR controller raycasting and selection system
 
 The Rift CV1's Constellation tracking and the Quest 3's inside-out tracking are fully abstracted by OpenXR; no code changes needed between headsets.
 
@@ -67,12 +68,17 @@ northcloud-oculus/
 ├── Cargo.toml           — Bevy 0.18, bevy_mod_xr, bevy_mod_openxr, openxr
 ├── Cargo.lock           — Pinned dependency versions
 ├── src/
-│   └── main.rs          — Bevy app: add_xr_plugins, setup_diagram (nodes, edges, cube, light)
+│   ├── main.rs          — Bevy app entry point, demo panel
+│   ├── lib.rs           — Module exports
+│   ├── world_panel/     — WorldPanel system (egui → texture → 3D quad)
+│   ├── interaction/     — VR controller tracking, raycasting, selection
+│   ├── data/            — Prometheus, Grafana, Loki data ingestion
+│   ├── panels/          — MapPanel, DetailPanel feature panels
+│   └── node_marker/     — Health status indicators with animations
 ├── scripts/
 │   └── fetch-openxr-loader.ps1 — Downloads openxr_loader.dll into target\release\
-├── docs/
-│   └── plans/           — Design documents
-└── .gitignore
+└── docs/
+    └── plans/           — Design documents
 ```
 
 ## Dependencies
@@ -83,3 +89,7 @@ northcloud-oculus/
 | [bevy_mod_xr](https://crates.io/crates/bevy_mod_xr) | 0.5 | XR API for Bevy |
 | [bevy_mod_openxr](https://crates.io/crates/bevy_mod_openxr) | 0.5 | OpenXR backend for bevy_mod_xr |
 | [openxr](https://crates.io/crates/openxr) | 0.21 | OpenXR bindings |
+| [bevy_egui](https://crates.io/crates/bevy_egui) | 0.39 | egui integration for Bevy |
+| [bevy_xr_utils](https://crates.io/crates/bevy_xr_utils) | 0.5 | VR interaction utilities |
+| [reqwest](https://crates.io/crates/reqwest) | 0.12 | HTTP client for data ingestion |
+| [serde](https://crates.io/crates/serde) | 1.0 | Serialization for API responses |

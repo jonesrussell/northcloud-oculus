@@ -33,21 +33,11 @@ pub struct SelectionState {
 pub struct RightTriggerAction;
 
 /// Trigger input state (from VR controller)
-#[derive(Resource)]
+#[derive(Resource, Default)]
 pub struct TriggerInput {
     pub right_trigger_pressed: bool,
     pub right_trigger_just_pressed: bool,
     previous_pressed: bool,
-}
-
-impl Default for TriggerInput {
-    fn default() -> Self {
-        Self {
-            right_trigger_pressed: false,
-            right_trigger_just_pressed: false,
-            previous_pressed: false,
-        }
-    }
 }
 
 /// System to read VR controller trigger input and update TriggerInput resource

@@ -131,6 +131,7 @@ pub struct MapNode {
 }
 
 /// Spawns NodeMarkers on a MapPanel based on geographic coordinates
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_map_markers(
     commands: &mut Commands,
     meshes: &mut Assets<Mesh>,

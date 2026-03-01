@@ -1,15 +1,15 @@
 //! northcloud-oculus library
 //!
-//! VR-native observability cockpit built with Bevy and OpenXR.
+//! VR observability cockpit built with Bevy and OpenXR.
 
-pub mod world_panel;
+pub mod data;
 pub mod interaction;
 pub mod node_marker;
 pub mod panels;
-pub mod data;
+pub mod world_panel;
 
-pub use world_panel::WorldPanelPlugin;
+pub use data::DataIngestionPlugin;
 pub use interaction::InteractionPlugin;
 pub use node_marker::NodeMarkerPlugin;
 pub use panels::PanelsPlugin;
-pub use data::DataIngestionPlugin;
+pub use world_panel::WorldPanelPlugin;

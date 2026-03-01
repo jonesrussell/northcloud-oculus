@@ -37,6 +37,7 @@ impl Default for DetailPanelConfig {
 }
 
 /// Spawns a DetailPanel next to a NodeMarker
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_detail_panel(
     commands: &mut Commands,
     images: &mut Assets<Image>,
@@ -83,6 +84,7 @@ pub fn spawn_detail_panel(
 
 /// System that manages DetailPanel lifecycle: despawns panels for deselected
 /// nodes and spawns new ones for the current selection.
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_detail_on_selection(
     mut commands: Commands,
     mut images: ResMut<Assets<Image>>,

@@ -135,6 +135,7 @@ pub fn spawn_world_panel(
 }
 
 /// Helper to spawn a WorldPanel facing a target position (e.g., the user)
+#[allow(clippy::too_many_arguments)]
 pub fn spawn_world_panel_facing(
     commands: &mut Commands,
     images: &mut Assets<Image>,
