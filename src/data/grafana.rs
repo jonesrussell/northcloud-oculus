@@ -5,20 +5,13 @@ use serde::Deserialize;
 use std::collections::HashMap;
 use std::time::Instant;
 
-use super::{DataError, DataSource, HealthThresholds, NodeStatus};
+use super::{DataError, HealthThresholds, LogAnalysisConfig, NodeStatus};
 
-/// Grafana client configuration
+/// Grafana connection configuration (shared by all queries)
 #[derive(Clone)]
 pub struct GrafanaConfig {
     pub base_url: String,
     pub api_key: Option<String>,
-    pub datasource_uid: String,
-    /// PromQL query to execute via Grafana datasource proxy
-    pub query: String,
-    /// Label to use as node ID
-    pub id_label: String,
-    /// Health classification thresholds
-    pub thresholds: HealthThresholds,
 }
 
 impl Default for GrafanaConfig {
@@ -26,10 +19,48 @@ impl Default for GrafanaConfig {
         Self {
             base_url: "http://localhost:3000".to_string(),
             api_key: None,
+        }
+    }
+}
+
+/// Prometheus query routed through Grafana's datasource proxy
+#[derive(Clone)]
+pub struct GrafanaPrometheusQuery {
+    pub datasource_uid: String,
+    pub query: String,
+    pub id_label: String,
+    pub thresholds: HealthThresholds,
+}
+
+impl Default for GrafanaPrometheusQuery {
+    fn default() -> Self {
+        Self {
             datasource_uid: "prometheus".to_string(),
             query: "up".to_string(),
             id_label: "instance".to_string(),
             thresholds: HealthThresholds::default(),
+        }
+    }
+}
+
+/// Loki query routed through Grafana's datasource proxy
+#[derive(Clone)]
+pub struct GrafanaLokiQuery {
+    pub datasource_uid: String,
+    pub query: String,
+    pub id_label: String,
+    pub range_seconds: u64,
+    pub log_analysis: LogAnalysisConfig,
+}
+
+impl Default for GrafanaLokiQuery {
+    fn default() -> Self {
+        Self {
+            datasource_uid: "loki".to_string(),
+            query: r#"{job="varlogs"}"#.to_string(),
+            id_label: "service".to_string(),
+            range_seconds: 300,
+            log_analysis: LogAnalysisConfig::default(),
         }
     }
 }
@@ -84,11 +115,8 @@ impl GrafanaClient {
                 .expect("Failed to build HTTP client"),
         }
     }
-}
 
-#[async_trait::async_trait]
-impl DataSource for GrafanaClient {
-    async fn fetch_nodes(&self) -> Result<Vec<NodeStatus>, DataError> {
+    pub async fn fetch_nodes(&self, query: &GrafanaPrometheusQuery) -> Result<Vec<NodeStatus>, DataError> {
         let url = format!("{}/api/ds/query", self.config.base_url);
 
         let now = std::time::SystemTime::now()
@@ -100,9 +128,9 @@ impl DataSource for GrafanaClient {
             "queries": [{
                 "refId": "A",
                 "datasource": {
-                    "uid": self.config.datasource_uid
+                    "uid": query.datasource_uid
                 },
-                "expr": self.config.query,
+                "expr": query.query,
                 "instant": true
             }],
             "from": (now - 60000).to_string(),
@@ -152,10 +180,10 @@ impl DataSource for GrafanaClient {
                 if field.name == "Value" {
                     if let Some(labels) = &field.labels {
                         let id = labels
-                            .get(&self.config.id_label)
+                            .get(&query.id_label)
                             .cloned()
                             .unwrap_or_else(|| {
-                                warn!("Grafana: missing '{}' label, using fallback ID", self.config.id_label);
+                                warn!("Grafana: missing '{}' label, using fallback ID", query.id_label);
                                 format!("node-{}", i)
                             });
 
@@ -186,7 +214,7 @@ impl DataSource for GrafanaClient {
                             continue;
                         };
 
-                        let health = self.config.thresholds.classify(value);
+                        let health = query.thresholds.classify(value);
 
                         let mut status = NodeStatus {
                             id,
@@ -205,5 +233,39 @@ impl DataSource for GrafanaClient {
         }
 
         Ok(nodes)
+    }
+
+    pub async fn fetch_logs(&self, _query: &GrafanaLokiQuery) -> Result<Vec<NodeStatus>, DataError> {
+        // TODO: implement in Task 3
+        Ok(Vec::new())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn grafana_config_defaults() {
+        let config = GrafanaConfig::default();
+        assert_eq!(config.base_url, "http://localhost:3000");
+        assert!(config.api_key.is_none());
+    }
+
+    #[test]
+    fn prometheus_query_defaults() {
+        let q = GrafanaPrometheusQuery::default();
+        assert_eq!(q.datasource_uid, "prometheus");
+        assert_eq!(q.query, "up");
+        assert_eq!(q.id_label, "instance");
+    }
+
+    #[test]
+    fn loki_query_defaults() {
+        let q = GrafanaLokiQuery::default();
+        assert_eq!(q.datasource_uid, "loki");
+        assert_eq!(q.id_label, "service");
+        assert_eq!(q.range_seconds, 300);
+        assert!(!q.log_analysis.critical_patterns.is_empty());
     }
 }

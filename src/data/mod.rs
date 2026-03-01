@@ -32,21 +32,21 @@ impl Plugin for DataIngestionPlugin {
 pub struct DataIngestionConfig {
     /// Poll interval in seconds
     pub poll_interval_secs: f32,
-    /// Prometheus configuration (None = disabled)
-    pub prometheus: Option<PrometheusConfig>,
-    /// Grafana configuration (None = disabled)
+    /// Grafana connection configuration (None = disabled)
     pub grafana: Option<GrafanaConfig>,
-    /// Loki configuration (None = disabled)
-    pub loki: Option<LokiConfig>,
+    /// Prometheus query config (routed through Grafana)
+    pub prometheus_query: Option<GrafanaPrometheusQuery>,
+    /// Loki query config (routed through Grafana)
+    pub loki_query: Option<GrafanaLokiQuery>,
 }
 
 impl Default for DataIngestionConfig {
     fn default() -> Self {
         Self {
             poll_interval_secs: 30.0,
-            prometheus: None,
             grafana: None,
-            loki: None,
+            prometheus_query: None,
+            loki_query: None,
         }
     }
 }
@@ -79,35 +79,31 @@ pub fn poll_data_sources(
 
     state.last_poll = Some(time.elapsed_secs());
 
-    let prometheus_config = config.prometheus.clone();
     let grafana_config = config.grafana.clone();
-    let loki_config = config.loki.clone();
+    let prometheus_query = config.prometheus_query.clone();
+    let loki_query = config.loki_query.clone();
 
     let task_pool = AsyncComputeTaskPool::get();
     let task = task_pool.spawn(async move {
         let mut all_nodes = Vec::new();
 
-        if let Some(config) = prometheus_config {
-            let client = PrometheusClient::new(config);
-            match client.fetch_nodes().await {
+        let Some(grafana_config) = grafana_config else {
+            return all_nodes;
+        };
+
+        let client = GrafanaClient::new(grafana_config);
+
+        if let Some(ref prom_query) = prometheus_query {
+            match client.fetch_nodes(prom_query).await {
                 Ok(nodes) => all_nodes.extend(nodes),
-                Err(e) => warn!("Prometheus fetch failed: {e}"),
+                Err(e) => warn!("Grafana/Prometheus fetch failed: {e}"),
             }
         }
 
-        if let Some(config) = grafana_config {
-            let client = GrafanaClient::new(config);
-            match client.fetch_nodes().await {
+        if let Some(ref loki_query) = loki_query {
+            match client.fetch_logs(loki_query).await {
                 Ok(nodes) => all_nodes.extend(nodes),
-                Err(e) => warn!("Grafana fetch failed: {e}"),
-            }
-        }
-
-        if let Some(config) = loki_config {
-            let client = LokiClient::new(config);
-            match client.fetch_nodes().await {
-                Ok(nodes) => all_nodes.extend(nodes),
-                Err(e) => warn!("Loki fetch failed: {e}"),
+                Err(e) => warn!("Grafana/Loki fetch failed: {e}"),
             }
         }
 
@@ -147,18 +143,18 @@ pub fn apply_node_status_updates(
 
 /// Builder methods for DataIngestionConfig
 impl DataIngestionConfig {
-    pub fn with_prometheus(mut self, config: PrometheusConfig) -> Self {
-        self.prometheus = Some(config);
-        self
-    }
-
     pub fn with_grafana(mut self, config: GrafanaConfig) -> Self {
         self.grafana = Some(config);
         self
     }
 
-    pub fn with_loki(mut self, config: LokiConfig) -> Self {
-        self.loki = Some(config);
+    pub fn with_prometheus_query(mut self, query: GrafanaPrometheusQuery) -> Self {
+        self.prometheus_query = Some(query);
+        self
+    }
+
+    pub fn with_loki_query(mut self, query: GrafanaLokiQuery) -> Self {
+        self.loki_query = Some(query);
         self
     }
 }
