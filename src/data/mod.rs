@@ -20,8 +20,10 @@ pub struct DataIngestionPlugin;
 
 impl Plugin for DataIngestionPlugin {
     fn build(&self, app: &mut App) {
+        if !app.world().contains_resource::<DataIngestionConfig>() {
+            app.init_resource::<DataIngestionConfig>();
+        }
         app.init_resource::<NodeStatusBuffer>()
-            .init_resource::<DataIngestionConfig>()
             .init_resource::<DataIngestionState>()
             .add_systems(Update, (poll_data_sources, apply_node_status_updates).chain());
     }

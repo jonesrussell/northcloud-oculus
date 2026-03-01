@@ -9,7 +9,7 @@ use bevy_egui::{egui, EguiPlugin};
 use bevy_mod_openxr::{add_xr_plugins, resources::OxrSessionConfig};
 use openxr::EnvironmentBlendMode;
 
-use northcloud_oculus::data::DataIngestionPlugin;
+use northcloud_oculus::data::{DataIngestionConfig, DataIngestionPlugin};
 use northcloud_oculus::interaction::InteractionPlugin;
 use northcloud_oculus::node_marker::NodeMarkerPlugin;
 use northcloud_oculus::panels::PanelsPlugin;
@@ -28,6 +28,7 @@ fn main() -> AppExit {
         .add_plugins(InteractionPlugin)
         .add_plugins(NodeMarkerPlugin)
         .add_plugins(PanelsPlugin)
+        .insert_resource(DataIngestionConfig::from_env())
         .add_plugins(DataIngestionPlugin)
         .insert_resource(OxrSessionConfig {
             blend_mode_preference: vec![
