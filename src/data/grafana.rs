@@ -7,6 +7,16 @@ use std::time::Instant;
 
 use super::{DataError, HealthThresholds, LogAnalysisConfig, NodeStatus};
 
+/// A raw log entry from Loki (before health analysis).
+/// `fetched_at` records when this entry was received, not the original log time.
+#[derive(Clone, Debug)]
+pub struct RawLogEntry {
+    pub fetched_at: Instant,
+    pub source: String,
+    pub message: String,
+    pub labels: HashMap<String, String>,
+}
+
 /// Grafana connection configuration (base URL and authentication)
 #[derive(Clone)]
 pub struct GrafanaConfig {
@@ -66,7 +76,7 @@ impl Default for GrafanaLokiQuery {
     fn default() -> Self {
         Self {
             datasource_uid: "loki".to_string(),
-            query: r#"{job="varlogs"}"#.to_string(),
+            query: r#"{service="crawler"}"#.to_string(),
             id_label: "service".to_string(),
             range_seconds: 300,
             log_analysis: LogAnalysisConfig::default(),
@@ -247,12 +257,7 @@ impl GrafanaClient {
     pub async fn fetch_logs(&self, query: &GrafanaLokiQuery) -> Result<Vec<NodeStatus>, DataError> {
         let url = format!("{}/api/ds/query", self.config.base_url);
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|e| DataError::ParseError(format!("System clock error: {e}")))?
-            .as_millis() as i64;
-
-        let from = now - (query.range_seconds as i64 * 1000);
+        let from = format!("now-{}s", query.range_seconds);
 
         let body = serde_json::json!({
             "queries": [{
@@ -264,8 +269,8 @@ impl GrafanaClient {
                 "queryType": "range",
                 "maxLines": 1000
             }],
-            "from": from.to_string(),
-            "to": now.to_string()
+            "from": from,
+            "to": "now"
         });
 
         let mut request = self.client.post(&url).json(&body);
@@ -384,6 +389,281 @@ impl GrafanaClient {
 
         Ok(nodes)
     }
+
+    /// Fetches raw log entries from Loki via Grafana (for display in classifier panel)
+    pub async fn fetch_raw_logs(&self, query: &GrafanaLokiQuery) -> Result<Vec<RawLogEntry>, DataError> {
+        let url = format!("{}/api/ds/query", self.config.base_url);
+
+        let from = format!("now-{}s", query.range_seconds);
+
+        let body = serde_json::json!({
+            "queries": [{
+                "refId": "A",
+                "datasource": {
+                    "uid": query.datasource_uid
+                },
+                "expr": query.query,
+                "queryType": "range",
+                "maxLines": 100
+            }],
+            "from": from,
+            "to": "now"
+        });
+
+        let mut request = self.client.post(&url).json(&body);
+
+        if let Some(ref api_key) = self.config.api_key {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| DataError::NetworkError(e.to_string()))?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            || response.status() == reqwest::StatusCode::FORBIDDEN
+        {
+            return Err(DataError::AuthError(format!(
+                "Grafana authentication failed (HTTP {})",
+                response.status().as_u16()
+            )));
+        }
+
+        if !response.status().is_success() {
+            return Err(DataError::NetworkError(format!(
+                "Grafana/Loki query failed: HTTP {}",
+                response.status()
+            )));
+        }
+
+        let body: GrafanaQueryResponse = response
+            .json()
+            .await
+            .map_err(|e| DataError::ParseError(e.to_string()))?;
+
+        let result = body.results.get("A").ok_or_else(|| {
+            DataError::ParseError("Grafana response missing expected result 'A'".to_string())
+        })?;
+
+        let mut entries = Vec::new();
+
+        for frame in &result.frames {
+            let labels_idx = frame.schema.fields.iter().position(|f| f.name == "labels");
+            let line_idx = frame.schema.fields.iter().position(|f| f.name == "Line");
+
+            let (Some(labels_idx), Some(line_idx)) = (labels_idx, line_idx) else {
+                warn!("Grafana/Loki: frame missing 'labels' or 'Line' field, skipping");
+                continue;
+            };
+
+            let labels_values = frame.data.values.get(labels_idx);
+            let line_values = frame.data.values.get(line_idx);
+
+            let (Some(labels_values), Some(line_values)) = (labels_values, line_values) else {
+                warn!("Grafana/Loki: frame has schema fields but data arrays are missing, skipping");
+                continue;
+            };
+
+            for (i, label_val) in labels_values.iter().enumerate() {
+                let label_str = label_val.as_str().unwrap_or("{}");
+                let message = line_values.get(i).and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                let labels: HashMap<String, String> = match serde_json::from_str(label_str) {
+                    Ok(l) => l,
+                    Err(e) => {
+                        warn!("Grafana/Loki: failed to parse label JSON, skipping entry: {e}");
+                        continue;
+                    }
+                };
+                let source = labels
+                    .get(&query.id_label)
+                    .cloned()
+                    .unwrap_or_else(|| "unknown".to_string());
+
+                entries.push(RawLogEntry {
+                    fetched_at: Instant::now(),
+                    source,
+                    message,
+                    labels,
+                });
+            }
+        }
+
+        Ok(entries)
+    }
+
+    /// Fetches a single metric count from Loki via Grafana (for frontier stats)
+    pub async fn fetch_loki_count(&self, query: &str, range_seconds: u64, datasource_uid: &str) -> Result<u64, DataError> {
+        let url = format!("{}/api/ds/query", self.config.base_url);
+
+        let from = format!("now-{}s", range_seconds);
+
+        let body = serde_json::json!({
+            "queries": [{
+                "refId": "A",
+                "datasource": {
+                    "uid": datasource_uid
+                },
+                "expr": query,
+                "queryType": "instant"
+            }],
+            "from": from,
+            "to": "now"
+        });
+
+        let mut request = self.client.post(&url).json(&body);
+
+        if let Some(ref api_key) = self.config.api_key {
+            request = request.header("Authorization", format!("Bearer {}", api_key));
+        }
+
+        let response = request
+            .send()
+            .await
+            .map_err(|e| DataError::NetworkError(e.to_string()))?;
+
+        if response.status() == reqwest::StatusCode::UNAUTHORIZED
+            || response.status() == reqwest::StatusCode::FORBIDDEN
+        {
+            return Err(DataError::AuthError(format!(
+                "Grafana authentication failed (HTTP {})",
+                response.status().as_u16()
+            )));
+        }
+
+        if !response.status().is_success() {
+            return Err(DataError::NetworkError(format!(
+                "Grafana/Loki count query failed: HTTP {}",
+                response.status()
+            )));
+        }
+
+        let body: GrafanaQueryResponse = response
+            .json()
+            .await
+            .map_err(|e| DataError::ParseError(e.to_string()))?;
+
+        let result = body.results.get("A").ok_or_else(|| {
+            DataError::ParseError("Grafana response missing expected result 'A'".to_string())
+        })?;
+
+        // Extract the count value from the first frame
+        for frame in &result.frames {
+            if let Some(values) = frame.data.values.first() {
+                if let Some(val) = values.first() {
+                    if let Some(n) = val.as_f64() {
+                        if !n.is_finite() || n < 0.0 {
+                            warn!("Grafana/Loki count query returned non-finite or negative value: {n}");
+                            return Ok(0);
+                        }
+                        return Ok(n as u64);
+                    }
+                    if let Some(n) = val.as_u64() {
+                        return Ok(n);
+                    }
+                }
+            }
+        }
+
+        if !result.frames.is_empty() {
+            warn!("Grafana/Loki count query returned frames but no parseable numeric value");
+        }
+
+        Ok(0)
+    }
+
+    /// Fetches all frontier stats from Loki via Grafana.
+    ///
+    /// Counter metrics (submit_events, fetch_success, etc.) use the provided `range_seconds` window.
+    /// Queue depth metrics (pending, fetching) always use a 2h window via `last_over_time`.
+    /// Individual query failures are logged and collected in `errors`; successful values are returned.
+    pub async fn fetch_frontier_stats(&self, range_seconds: u64, datasource_uid: &str, service_label: &str) -> FrontierStatsResult {
+        let range = format!("[{}s]", range_seconds);
+        let mut errors = Vec::new();
+
+        // Pre-compute query strings (must outlive the tokio::join! futures)
+        let q_submit = format!(r#"sum(count_over_time({{service="{service_label}"}} |= "URL submitted to frontier" {range}))"#);
+        let q_queued = format!(r#"sum(count_over_time({{service="{service_label}"}} |= "URL submitted to frontier" | json | queued="true" {range}))"#);
+        let q_success = format!(r#"sum(count_over_time({{service="{service_label}"}} |= "URL fetched successfully" {range}))"#);
+        let q_failures = format!(r#"sum(count_over_time({{service="{service_label}"}} |= "URL fetch failed" {range}))"#);
+        let q_robots = format!(r#"sum(count_over_time({{service="{service_label}"}} |= "robots_blocked" {range}))"#);
+        let q_dead = format!(r#"sum(count_over_time({{service="{service_label}"}} |= "URL marked dead" {range}))"#);
+        // Queue depth from frontier_stats logs (last value in 2h window)
+        let q_pending = format!(r#"max(last_over_time({{service="{service_label}"}} |= "frontier_stats" | json | unwrap total_pending [2h]))"#);
+        let q_fetching = format!(r#"max(last_over_time({{service="{service_label}"}} |= "frontier_stats" | json | unwrap total_fetching [2h]))"#);
+
+        // Run all 8 queries concurrently
+        let (
+            submit_res,
+            queued_res,
+            success_res,
+            failures_res,
+            robots_res,
+            dead_res,
+            pending_res,
+            fetching_res,
+        ) = tokio::join!(
+            self.fetch_loki_count(&q_submit, range_seconds, datasource_uid),
+            self.fetch_loki_count(&q_queued, range_seconds, datasource_uid),
+            self.fetch_loki_count(&q_success, range_seconds, datasource_uid),
+            self.fetch_loki_count(&q_failures, range_seconds, datasource_uid),
+            self.fetch_loki_count(&q_robots, range_seconds, datasource_uid),
+            self.fetch_loki_count(&q_dead, range_seconds, datasource_uid),
+            self.fetch_loki_count(&q_pending, 7200, datasource_uid),
+            self.fetch_loki_count(&q_fetching, 7200, datasource_uid),
+        );
+
+        let unwrap_or_log = |res: Result<u64, DataError>, name: &str, errors: &mut Vec<String>| -> u64 {
+            match res {
+                Ok(n) => n,
+                Err(e) => {
+                    warn!("Frontier stats: {name} query failed: {e}");
+                    errors.push(format!("{name}: {e}"));
+                    0
+                }
+            }
+        };
+
+        let submit_events = unwrap_or_log(submit_res, "submit_events", &mut errors);
+        let new_urls_queued = unwrap_or_log(queued_res, "new_urls_queued", &mut errors);
+        let fetch_success = unwrap_or_log(success_res, "fetch_success", &mut errors);
+        let fetch_failures = unwrap_or_log(failures_res, "fetch_failures", &mut errors);
+        let robots_blocked = unwrap_or_log(robots_res, "robots_blocked", &mut errors);
+        let dead_urls = unwrap_or_log(dead_res, "dead_urls", &mut errors);
+        let pending = unwrap_or_log(pending_res, "pending", &mut errors);
+        let fetching = unwrap_or_log(fetching_res, "fetching", &mut errors);
+
+        FrontierStatsResult {
+            submit_events,
+            new_urls_queued,
+            fetch_success,
+            fetch_failures,
+            robots_blocked,
+            dead_urls,
+            pending,
+            fetching,
+            errors,
+        }
+    }
+}
+
+/// Result from fetching frontier stats.
+/// Counter fields cover the caller-supplied time window; `pending`/`fetching` are 2h snapshots.
+#[derive(Clone, Debug, Default)]
+pub struct FrontierStatsResult {
+    pub submit_events: u64,
+    pub new_urls_queued: u64,
+    pub fetch_success: u64,
+    pub fetch_failures: u64,
+    pub robots_blocked: u64,
+    pub dead_urls: u64,
+    /// Queue depth (2h snapshot)
+    pub pending: u64,
+    /// Queue depth (2h snapshot)
+    pub fetching: u64,
+    /// Errors from individual queries (empty = all succeeded)
+    pub errors: Vec<String>,
 }
 
 #[cfg(test)]
